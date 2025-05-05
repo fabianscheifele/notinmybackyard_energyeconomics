@@ -1,0 +1,19 @@
+Nome: NOVO AIRAO
+Codigo Estacao: A127
+Latitude: -2.628982
+Longitude: -60.941108
+Altitude: 37.59
+Situacao: Desativada
+Data Inicial: 2008-04-10
+Data Final: 2008-10-29
+Periodicidade da Medicao: Mensal
+
+Data Medicao;VENTO, VELOCIDADE MEDIA MENSAL (AUT)(m/s);
+2008-04-30;null;
+2008-05-31;.956428;
+2008-06-30;.975833;
+2008-07-31;.6875;
+2008-08-31;null;
+2008-09-30;null;
+2008-10-31;null;
+

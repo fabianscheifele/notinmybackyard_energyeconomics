@@ -1,0 +1,23 @@
+Nome: ALFENAS
+Codigo Estacao: A504
+Latitude: -21.45
+Longitude: -45.95
+Altitude: 875
+Situacao: Desativada
+Data Inicial: 2004-01-01
+Data Final: 2004-11-17
+Periodicidade da Medicao: Mensal
+
+Data Medicao;VENTO, VELOCIDADE MEDIA MENSAL (AUT)(m/s);
+2004-01-31;null;
+2004-02-29;null;
+2004-03-31;null;
+2004-04-30;null;
+2004-05-31;1.912561;
+2004-06-30;1.824827;
+2004-07-31;2.484124;
+2004-08-31;2.249464;
+2004-09-30;2.634628;
+2004-10-31;2.554802;
+2004-11-30;null;
+

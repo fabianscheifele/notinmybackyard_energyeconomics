@@ -1,0 +1,21 @@
+Nome: PORTO DE MOZ
+Codigo Estacao: A245
+Latitude: -1.82194443
+Longitude: -52.11166666
+Altitude: 19
+Situacao: Operante
+Data Inicial: 2022-04-06
+Data Final: 2022-12-31
+Periodicidade da Medicao: Mensal
+
+Data Medicao;VENTO, VELOCIDADE MEDIA MENSAL (AUT)(m/s);
+2022-04-30;1.017935;
+2022-05-31;1.030201;
+2022-06-30;.970833;
+2022-07-31;.992713;
+2022-08-31;1.007457;
+2022-09-30;1.069094;
+2022-10-31;1.085151;
+2022-11-30;1.086862;
+2022-12-31;1.00556;
+

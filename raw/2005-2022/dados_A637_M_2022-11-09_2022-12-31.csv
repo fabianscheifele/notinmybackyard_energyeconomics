@@ -1,0 +1,14 @@
+Nome: Paty do Alferes - Avelar
+Codigo Estacao: A637
+Latitude: -22.34722221
+Longitude: -43.41777777
+Altitude: 508
+Situacao: Operante
+Data Inicial: 2022-11-09
+Data Final: 2022-12-31
+Periodicidade da Medicao: Mensal
+
+Data Medicao;VENTO, VELOCIDADE MEDIA MENSAL (AUT)(m/s);
+2022-11-30;null;
+2022-12-31;1.412575;
+

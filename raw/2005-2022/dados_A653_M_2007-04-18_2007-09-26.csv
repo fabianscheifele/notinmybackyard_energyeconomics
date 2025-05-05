@@ -1,0 +1,18 @@
+Nome: LAGOA R.DE FREITAS
+Codigo Estacao: A653
+Latitude: -22.97416667
+Longitude: -43.21777778
+Altitude: 4
+Situacao: Desativada
+Data Inicial: 2007-04-18
+Data Final: 2007-09-26
+Periodicidade da Medicao: Mensal
+
+Data Medicao;VENTO, VELOCIDADE MEDIA MENSAL (AUT)(m/s);
+2007-04-30;null;
+2007-05-31;null;
+2007-06-30;1.132221;
+2007-07-31;1.48406;
+2007-08-31;1.297851;
+2007-09-30;1.347291;
+

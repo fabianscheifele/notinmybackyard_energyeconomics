@@ -1,0 +1,32 @@
+Nome: FAINA
+Codigo Estacao: A007
+Latitude: -15.43333333
+Longitude: -50.36666666
+Altitude: 332
+Situacao: Desativada
+Data Inicial: 2004-01-01
+Data Final: 2005-08-15
+Periodicidade da Medicao: Mensal
+
+Data Medicao;VENTO, VELOCIDADE MEDIA MENSAL (AUT)(m/s);
+2004-01-31;1.820173;
+2004-02-29;1.756334;
+2004-03-31;1.681452;
+2004-04-30;1.699028;
+2004-05-31;2.158602;
+2004-06-30;2.246546;
+2004-07-31;2.497756;
+2004-08-31;2.554979;
+2004-09-30;2.448317;
+2004-10-31;null;
+2004-11-30;null;
+2004-12-31;null;
+2005-01-31;null;
+2005-02-28;null;
+2005-03-31;null;
+2005-04-30;null;
+2005-05-31;null;
+2005-06-30;null;
+2005-07-31;null;
+2005-08-31;null;
+
