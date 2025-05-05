@@ -42,7 +42,7 @@ vignettes/*.pdf
 **/desktop.ini
 
 #ignore data folder to avoid syncing large datasets with Github
-raw/
-intermediate/
-final/
-output/
+#raw/
+#intermediate/
+#final/
+#output/
