@@ -447,7 +447,7 @@ panel<-panel%>%rename(municipality_name=nome_municipio)
 ```
 
 
-8. Solar Irraditation
+8. Solar Irradiation
 ```{r}
 `%notin%` <- Negate(`%in%`)
 irradiation<-fread(here("raw","global_horizontal_means_sedes-munic.csv"))
