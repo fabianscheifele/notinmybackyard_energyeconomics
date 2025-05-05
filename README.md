@@ -21,9 +21,9 @@ Data Preparation (will create data files in the subfolders "raw", "intermediate"
 
 - 5-merge annual panel data (can take 20-30 minutes)
 - 6 monthly RAIS panel (can take 20-30 minutes)
-- 7 1-to-1 matching: Does the matching and stores matching weights
+- 7a 1-to-1 matching: Does the matching and stores matching weights
 - 7b 1-to-1 matching spillover unit: Repeat matching among spillover units
-- 8 merge matching weights
+- 8a merge matching weights
 - 8b merge matching weights for the spillover analysis
 
 Data Analysis (will create outputs in subfolder "outputs". Usually R should create any subdirectories inside "outputs" automatically. If not, please create respective subfolders as specific in file saving commands.)
