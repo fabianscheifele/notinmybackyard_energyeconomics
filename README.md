@@ -27,6 +27,7 @@ Data Preparation (will create data files in the subfolders "raw", "intermediate"
 - 8b merge matching weights for the spillover analysis
 
 Data Analysis (will create outputs in subfolder "outputs". Usually R should create any subdirectories inside "outputs" automatically. If not, please create respective subfolders as specific in file saving commands.)
+
 8. Run 10a for main results.
 
 9. Run 10b for heterogeneity results.
