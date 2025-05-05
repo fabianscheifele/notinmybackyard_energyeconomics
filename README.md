@@ -1,4 +1,4 @@
-This folder includes the code and data to replicate the analysis of the paper "Not in My Backyard? The Local Impact of Wind and Solar Parks in Brazil" by Fabian Scheifele and David Popp (2025), published in Energy Economics
+This folder includes the code and data to replicate the analysis of the paper "Not in My Backyard? The Local Impact of Wind and Solar Parks in Brazil" by Fabian Scheifele and David Popp (2025), published in Energy Economics: https://doi.org/10.1016/j.eneco.2025.108481 
 
 Please proceed with all the steps in the sequence outlined below to ensure that you can download all the publicly available data from the servers and construct all the intermediate datasets necessary to replicate the analysis using R.
 
