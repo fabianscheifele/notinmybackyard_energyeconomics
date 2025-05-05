@@ -1,4 +1,4 @@
-This folder includes the code and data to replicate the analysis of the paper "Not in My Backyard? The Local Impact of Wind and Solar Parks in Brazil" by Fabian Scheifele and David Popp (2025), published in Energy Economics
+This folder includes the code and data to replicate the analysis of the paper "Not in My Backyard? The Local Impact of Wind and Solar Parks in Brazil" by Fabian Scheifele and David Popp (2025), published in Energy Economics: https://doi.org/10.1016/j.eneco.2025.108481 
 
 Please proceed with all the steps in the sequence outlined below to ensure that you can download all the publicly available data from the servers and construct all the intermediate datasets necessary to replicate the analysis using R.
 
@@ -9,7 +9,7 @@ Preparatory Steps:
 
 3. Ensure that you have at least 30 GB of available disk space to accommodate the files that will be downloaded in the process. Also, make sure that you have the latest versions of R and RStudio installed, and always run the first chunk that installs all the packages.
 
-Data Preparation (will create data files in the subfolder "data"):
+Data Preparation (will create data files in the subfolders "raw", "intermediate" and "final"):
 
 4. Open brazil_rejobs.Rproj to open the R project (important for relative file paths; always run the code with the project opened). Then run Markdown files 1-3 to create the renewable energy project dataset.
 
@@ -26,7 +26,7 @@ Data Preparation (will create data files in the subfolder "data"):
 - 8 merge matching weights
 - 8b merge matching weights for the spillover analysis
 
-Data Analysis (will create outputs in subfolder "outputs")
+Data Analysis (will create outputs in subfolder "outputs". Usually R should create any subdirectories inside "outputs" automatically. If not, please create respective subfolders as specific in file saving commands.)
 8. Run 10a for main results.
 
 9. Run 10b for heterogeneity results.
