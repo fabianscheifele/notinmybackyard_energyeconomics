@@ -1,0 +1,582 @@
+---
+title: "10e Robustness substations"
+author: "Fabian Scheifele"
+date: "2025-02-01"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r }
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","here","bacondecomp", "fixest", "plm","geobr","sf","ggdist","ggspatial", "ggsn","extrafont","data.table","geosphere"))
+
+
+theme_set(theme_minimal(base_family = "Times New Roman"))
+```
+
+load data
+```{r pressure, echo=FALSE}
+
+# load unmatched data and re-create the treatment variable used for eligibility (prior to matching)
+monthly_panel<-readRDS(here("final","monthly_final_noweights.RDS"))
+monthly_panel <- monthly_panel %>%
+  group_by(id_municipio) %>%
+  mutate(solar_treat_prematch = if_else(any(new_mw_solar > 5), 1, 
+                                        if_else(any(plant_5MW_distance > 50), 0, NA_integer_))) %>%
+  mutate(wind_treat_prematch = if_else(any(new_mw_wind > 5), 1, 
+                                       if_else(any(plant_5MW_distance > 50), 0, NA_integer_)))%>%
+  mutate(solar_jobs_endmonth=solar_inst_endmonth+solar_comp_endmonth+solar_om_endmonth)%>%
+  mutate(solar_other_jobs_endmonth=total_endmonth-solar_jobs_endmonth)%>%
+  mutate(wind_jobs_endmonth=wind_inst_endmonth+wind_comp_endmonth+wind_om_endmonth)%>%
+  mutate(wind_other_jobs_endmonth=total_endmonth-wind_jobs_endmonth)
+
+
+
+annual_panel<-readRDS(here("final","annual_panel_final_noweights.RDS"))
+annual_panel <- annual_panel %>%
+  group_by(id_municipio) %>%
+  mutate(solar_treat_prematch = if_else(any(new_mw_solar > 5), 1, 
+                                        if_else(any(plant_5MW_distance > 50), 0, NA_integer_))) %>%
+  mutate(wind_treat_prematch = if_else(any(new_mw_wind > 5), 1, 
+                                       if_else(any(plant_5MW_distance > 50), 0, NA_integer_)))
+
+
+substations<-read_xlsx(here("raw","substations SIN.xlsx"))%>%
+  rename(entry_date=9, 
+         lon=10,
+         lat=11)%>%
+  select(1,9:11)
+
+  
+substations$lat<-as.numeric(substations$lat)
+```
+
+create substation treatment variable
+```{r}
+# Load necessary libraries
+
+# 🔹 Step 1: Identify New Substations (2007-2022)
+new_substations <- substations %>%
+  filter(entry_date >= as.Date("2007-01-01") & entry_date <= as.Date("2022-12-31"))
+
+# Extract only necessary columns for speed
+new_substations_coords <- new_substations %>% select(OBJECTID, lon, lat, entry_date)
+
+# 🔹 Step 2: Identify Municipalities Within 10km of New Substations Using Vectorized Distance Calculation
+
+# Extract necessary columns from unmatched_subst_monthly
+municipalities_coords <- monthly_panel %>% distinct(id_municipio, lon, lat)
+
+# Compute **all** distances at once (faster than looping)
+distance_matrix <- distm(
+  as.matrix(municipalities_coords[, c("lon", "lat")]), 
+  as.matrix(new_substations_coords[, c("lon", "lat")])
+) / 1000  # Convert meters to km
+
+# Find closest substation within 10km for each municipality
+close_substations <- apply(distance_matrix, 1, function(distances) {
+  within_10km <- which(distances <= 10)
+  
+  if (length(within_10km) == 0) {
+    return(c(NA, NA))  # If no substation is within 10km, return NA
+  }
+
+  closest_index <- within_10km[which.min(distances[within_10km])]
+  return(c(new_substations_coords$OBJECTID[closest_index], as.character(new_substations_coords$entry_date[closest_index])))
+})
+
+# Convert results into a data frame
+df_near_substations <- data.frame(
+  id_municipio = municipalities_coords$id_municipio,
+  closest_substation_id = close_substations[1, ], 
+  entry_date = as.Date(close_substations[2, ])  # ✅ Properly convert back to Date
+)%>%
+  mutate(month=month(entry_date),
+         ano=year(entry_date), 
+         new_subst=if_else(!is.na(entry_date),1,0))%>%
+  select(id_municipio, month,ano, new_subst)
+
+
+# 🔹 Step 3: Merge with unmatched_subst_monthly and Create treat_substation
+monthly_panel <- monthly_panel %>%
+  left_join(df_near_substations, by = c("id_municipio", "ano", "month")) 
+annual_panel <- annual_panel %>%
+  left_join(df_near_substations, by = c("id_municipio", "ano")) 
+
+monthly_panel$new_subst[is.na(monthly_panel$new_subst)]<-0
+annual_panel$new_subst[is.na(annual_panel$new_subst)]<-0
+
+# 🔹 Step 4: Create Relative Time Variable t_substation
+revcumsum <- function(x){
+  x <- rev(cumsum(rev(x)))
+}
+#RELATIVE TIME VAR MONTH
+monthly_panel<-monthly_panel%>%arrange(id_municipio, ano, month)
+monthly_panel <- monthly_panel %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index <- which(.x$new_subst == 1)[1]
+    if (is.na(switch_index)) {
+      .x %>% mutate(t_subst = NA_real_)
+    } else {
+      .x %>% mutate(t_subst = row_number() - switch_index)
+    }
+  })
+
+for (i in 1:37) {
+  col_name <- paste0("d_subst_pre", i)
+  monthly_panel <- monthly_panel %>%
+    mutate(!!col_name := c(tail(new_subst, -i), rep(0, i)))
+}
+
+#for post periods create lags
+for (i in 1:37) {
+  col_name <- paste0("d_subst_post", i)
+  monthly_panel <- monthly_panel %>%
+    mutate(!!col_name := c(rep(0, i), head(new_subst, -i)))
+}
+
+#############################RELATIVE TIME VAR YEAR
+
+annual_panel<-annual_panel%>%arrange(id_municipio, ano)
+annual_panel <- annual_panel %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index <- which(.x$new_subst == 1)[1]
+    if (is.na(switch_index)) {
+      .x %>% mutate(t_subst = NA_real_)
+    } else {
+      .x %>% mutate(t_subst = row_number() - switch_index)
+    }
+  })
+
+for (i in 1:7) {
+  col_name <- paste0("d_subst_pre", i)
+  annual_panel <- annual_panel %>%
+    mutate(!!col_name := c(tail(new_subst, -i), rep(0, i)))
+}
+
+#for post periods create lags
+for (i in 1:5) {
+  col_name <- paste0("d_subst_post", i)
+  annual_panel <- annual_panel %>%
+    mutate(!!col_name := c(rep(0, i), head(new_subst, -i)))
+}
+
+library(stats)
+
+monthly_panel$d_subst_pre37_bin <- ave(monthly_panel$d_subst_pre37,monthly_panel$id_municipio, FUN = revcumsum)
+monthly_panel$d_subst_post25_bin <- ave(monthly_panel$d_subst_post25,monthly_panel$id_municipio, FUN = cumsum)
+annual_panel$d_subst_pre7_bin <- ave(annual_panel$d_subst_pre7,annual_panel$id_municipio, FUN = revcumsum)
+annual_panel$d_subst_post5_bin <- ave(annual_panel$d_subst_post5,annual_panel$id_municipio, FUN = cumsum)
+#restrict the sample to places that have not received either wind or solar nor are within 30km of a power plan
+
+
+final_subst <- monthly_panel%>%
+  mutate(wind_treat_prematch_clean = if_else(is.na(wind_treat_prematch), 0, wind_treat_prematch))%>%
+  mutate(solar_treat_prematch_clean = if_else(is.na(solar_treat_prematch), 0, solar_treat_prematch)) %>%
+  filter(plant_5MW_distance>=20 & (wind_treat_prematch_clean==0 |solar_treat_prematch_clean==0))
+
+final_subst_annual <- annual_panel%>%
+  mutate(wind_treat_prematch_clean = if_else(is.na(wind_treat_prematch), 0, wind_treat_prematch))%>%
+  mutate(solar_treat_prematch_clean = if_else(is.na(solar_treat_prematch), 0, solar_treat_prematch)) %>%
+  filter(plant_5MW_distance>=20 & (wind_treat_prematch_clean==0 |solar_treat_prematch_clean==0))
+
+#14 out of potential 49 solar municipalities also receive substation within 10km during observation period
+treated_solar<-monthly_panel%>%filter(solar_treat_prematch==1 & new_subst==1)%>%distinct(id_municipio,solar_treat_prematch,new_subst)
+treated_solar2<-monthly_panel%>%filter(solar_treat_prematch==1)%>%distinct(id_municipio,solar_treat_prematch)
+
+#14 out of potential 49 wind municipalities also receive substation within 10km during observation period
+treated_wind<-monthly_panel%>%filter(wind_treat_prematch==1 & new_subst==1)%>%distinct(id_municipio,wind_treat_prematch,new_subst)
+treated_wind2<-monthly_panel%>%filter(wind_treat_prematch==1)%>%distinct(id_municipio,wind_treat_prematch)
+
+```
+
+Substations Monthly Treatment effect estimation
+```{r}
+monthly_coef_subst <- function(dv, df_origin, t_start, t_max, graph_title) {
+  formula_string <- paste(dv, "~ d_subst_pre37_bin+ d_subst_pre.[", t_start, ":1]+ new_subst + d_subst_post.[1:", t_max, "] +d_subst_post25_bin| id_municipio + month^ano")
+  form <- as.formula(formula_string)
+  
+  fe <- feols(form, df_origin, cluster = "id_municipio")
+  
+solar_vars <- c("d_subst_pre[0-9]", "d_subst_post[0-9]", "new_subst")
+   
+
+  coef <- coef(fe)[grepl(paste0("^(", paste(solar_vars, collapse = "|"), ")"), names(coef(fe)))]
+  se <- se(fe)[grepl(paste0("^(", paste(solar_vars, collapse = "|"), ")"), names(coef(fe)))]
+  df <- data.frame(coef, se) 
+  df<-df%>% mutate(x.axis = c(-37,seq(-35,25,1)))
+    #add the zero coefficient for -37 (comparison time unit)
+  add_row <- data.frame(coef = 0, se = 0, x.axis = -36)
+  df <- rbind(df, add_row)
+  
+  plots <- ggplot(df, aes(x = x.axis, y = coef)) +
+    geom_ribbon(aes(ymin = coef - 1.96 * se, ymax = coef + 1.96 * se), fill = "gray70") +
+    geom_line() +
+    ggtitle(graph_title) +
+    labs(x = "Months before/after substation entered operation", y = "") +
+    theme_bw() +
+    theme(text = element_text(size = 7)) +
+    scale_x_continuous(expand = c(0.01, 0.01),
+    breaks = c(-37, seq(-32, 20, by = 4), 25),  # Set breaks including custom points
+    labels = c("-37+", paste(seq(-32, 20, by = 4)), "25+")   # Set labels accordingly
+  ) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = 0, linetype = "dashed")
+
+  ggsave(filename = here("output", "regressions", "TWFE 1-to-1 binning", "substation", paste0(dv, ".png")), 
+         plot = plots, 
+         units = "px", width = 2000, height = 1000)
+  return(list(plot = plots, table = df, regression_model=fe))
+  }
+
+
+A<-monthly_coef_subst("solar_inst_endmonth", final_subst,35,24,"a. Installation")
+B<-monthly_coef_subst("solar_om_endmonth", final_subst, 35,24,"b. O&M")
+C<-monthly_coef_subst("solar_comp_endmonth", final_subst, 35,24,"c. Components")
+D<-monthly_coef_subst("solar_other_jobs_endmonth", final_subst, 35,24,"d. Non-solar sectors")
+
+library(patchwork)
+subst2x2<- A$plot + B$plot + C$plot + D$plot
+ggsave(subst2x2, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix","substation2x2.png"),units="px", width = 2000, height=1000)
+
+
+check <- feols(solar_inst_endmonth~ d_subst_pre37_bin+d_subst_pre.[35:1] + new_subst+ d_subst_post.[1:24]+d_subst_post25_bin |id_municipio + month^ano, final_subst)
+summary(check)
+
+
+
+```
+Substations Annual Treatment effect estimation
+```{r}
+###############ANNUAL############################################################################################## 
+library(scales)
+annual_coefplot_subst <- function(dv, df_origin, t_start, t_max, graph_t_min, graph_t_max, graph_title) {
+  formula_string <- paste(dv, "~ d_subst_pre7_bin+ d_subst_pre.[", t_start, ":4] +d_subst_pre.[2:1]+ new_subst + d_subst_post.[1:", t_max, "] +d_subst_post5_bin| id_municipio + ano")
+  
+  form <- as.formula(formula_string)
+  
+  fe <- feols(form, df_origin, cluster = "id_municipio")
+  
+solar_vars <- c("d_subst_pre[0-9]", "d_subst_post[0-9]", "new_subst")
+   
+
+  coef <- coef(fe)[grepl(paste0("^(", paste(solar_vars, collapse = "|"), ")"), names(coef(fe)))]
+  se <- se(fe)[grepl(paste0("^(", paste(solar_vars, collapse = "|"), ")"), names(coef(fe)))]
+  df <- data.frame(coef, se) 
+  df<-df%>% mutate(x.axis = c(seq(graph_t_min, -4, 1),seq(-2,graph_t_max,1)))
+    #add the zero coefficient for -24 (comparison time unit)
+  add_row <- data.frame(coef = 0, se = 0, x.axis = -3)
+  df <- rbind(df, add_row)
+  
+    plots <- ggplot(df, aes(x = x.axis, y = coef)) +
+    geom_ribbon(aes(ymin = coef - 1.96 * se, ymax = coef + 1.96 * se), fill = "gray70") +
+    geom_line() +
+    ggtitle(graph_title) +
+    labs(x = "Years before/after substation stats operating", y = "") +
+    theme_bw() +
+    theme(text = element_text(size = 7)) +
+    scale_x_continuous(breaks = seq(graph_t_min, graph_t_max, 1),
+                      labels = c(paste0(graph_t_min,"+"), paste(seq(graph_t_min+1, graph_t_max-1, by = 1)), paste0(graph_t_max,"+"))) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = 0, linetype = "dashed")+
+        scale_y_continuous(labels = comma)
+
+
+  ggsave(filename = here("output", "regressions", "TWFE 1-to-1 binning", "substation", paste0(dv, ".png")), 
+         plot = plots, 
+         units = "px", width = 2000, height = 1000)
+    return(list(plot = plots, table = df, regression_model=fe))
+}
+
+gdp<-annual_coefplot_subst("pib_clean_constant2020_BRL", final_subst_annual, 6,4,-7,5,"a. GDP")
+ind<-annual_coefplot_subst("va_industria_constant2020_BRL", final_subst_annual, 6,4,-7,5,"b. Industry: Value-added")
+annual_subst<- gdp$plot+ ind$plot 
+
+ggsave(annual_subst, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix","substation_annual.png"),units="px", width = 2000, height=1000)
+check2 <- feols(pib_clean_constant2020_BRL~ d_subst_pre7_bin+d_subst_pre.[6:4] +d_subst_pre.[2:1]+ new_subst+ d_subst_post.[1:4]+d_subst_post5_bin |id_municipio + ano, final_subst_annual)
+summary(check2)
+```
+
+Means comparison between treated municipalities with substation closeby and not (CONTINUE HERE)
+```{r}
+wind_matched_final_monthly<-readRDS(here("final","wind1to1_final_monthly.RDS"))%>%
+  mutate(wind_jobs_endmonth=wind_inst_endmonth+wind_comp_endmonth+wind_om_endmonth)%>%
+  mutate(wind_other_jobs_endmonth=total_endmonth-wind_jobs_endmonth)
+
+solar_matched_final_monthly<-readRDS(here("final","solar1to1_final_monthly.RDS"))%>%arrange(id_municipio, ano, month)%>%
+  group_by(id_municipio)%>%
+  mutate(solar_jobs_endmonth=solar_inst_endmonth+solar_comp_endmonth+solar_om_endmonth)%>%
+  mutate(solar_other_jobs_endmonth=total_endmonth-solar_jobs_endmonth)
+
+wind_matched_final_annual<-readRDS(here("final","wind1to1_final_annual.RDS"))
+
+solar_matched_final_annual<-readRDS(here("final","solar1to1_final_annual.RDS"))
+
+
+#Any substation built within 10km of municipality 
+match_substations_recent_within_10km <- function(df_recent, df_substations, prefix) {
+  t_variable <- paste0("t_", prefix)  # e.g., "t_solar" or "t_wind"
+
+  # Compute commissioning date
+  df_recent <- df_recent %>%
+    mutate(commissioning_date = as.Date(paste0(ano, "-", month, "-01")))
+
+  # Convert to sf objects
+  substations_sf <- st_as_sf(df_substations, coords = c("lon", "lat"), crs = 4326)
+  recent_sf <- st_as_sf(df_recent, coords = c("lon", "lat"), crs = 4326)
+
+  # Function to find the closest substation within ±12 months and ≤10 km
+  find_closest_substation <- function(municipality) {
+    # Filter substations entering within ±12 months
+    eligible_substations <- df_substations %>%
+      filter(entry_date >= (municipality$commissioning_date - months(12)) & 
+             entry_date <= (municipality$commissioning_date + months(12)))
+
+    if (nrow(eligible_substations) == 0) {
+      return(NULL)  # If no eligible substation, return nothing
+    }
+
+    # Convert eligible substations to sf object
+    eligible_substations_sf <- st_as_sf(eligible_substations, coords = c("lon", "lat"), crs = 4326)
+
+    # Compute great-circle distances
+    distances <- distGeo(st_coordinates(municipality), st_coordinates(eligible_substations_sf)) / 1000  # Convert meters to km
+
+    # Filter only substations within 10 km
+    within_10km <- which(distances <= 10)
+    if (length(within_10km) == 0) {
+      return(NULL)  # If no substation within 10 km, return nothing
+    }
+
+    # Get the closest substation within the 10 km range
+    closest_index <- within_10km[which.min(distances[within_10km])]
+
+    return(data.frame(
+      id_municipio = municipality$id_municipio,
+      closest_substation_id = eligible_substations$OBJECTID[closest_index],
+      distance_km = distances[closest_index]
+    ))
+  }
+
+  # Apply function
+  results <- bind_rows(lapply(1:nrow(recent_sf), function(i) find_closest_substation(recent_sf[i, ])))
+
+  return(results)
+}
+
+##SUBSTATION BUILT IN VICINITY
+df_recent_solar <- solar_matched_final_monthly %>% 
+  filter(solar_treat_postmatch==1) 
+matched_recent_solar <- match_substations_recent_within_10km(df_recent_solar, substations, "solar")
+matched_recent_solar <-matched_recent_solar%>% mutate(subst_built=1)%>%distinct(id_municipio, subst_built)
+
+df_recent_wind <- wind_matched_final_monthly %>% 
+  filter(wind_treat_postmatch==1) 
+matched_recent_wind <- match_substations_recent_within_10km(df_recent_wind, substations, "wind")
+matched_recent_wind <-matched_recent_wind%>% mutate(subst_built=1)%>%distinct(id_municipio, subst_built)
+
+########MEANS comparison###########
+solar_treated_monthly<-solar_matched_final_monthly%>%left_join(matched_recent_solar, by="id_municipio")%>%filter(solar_treat_postmatch==1)
+solar_treated_monthly$subst_built[is.na(solar_treated_monthly$subst_built)]<-0
+
+solar_treated_annual<-solar_matched_final_annual%>%left_join(matched_recent_solar, by="id_municipio")%>%filter(solar_treat_postmatch==1)
+solar_treated_annual$subst_built[is.na(solar_treated_annual$subst_built)]<-0
+
+wind_treated_monthly<-wind_matched_final_monthly%>%left_join(matched_recent_wind, by="id_municipio")%>%filter(wind_treat_postmatch==1)
+wind_treated_monthly$subst_built[is.na(wind_treated_monthly$subst_built)]<-0
+
+wind_treated_annual<-wind_matched_final_annual%>%left_join(matched_recent_wind, by="id_municipio")%>%filter(wind_treat_postmatch==1)
+wind_treated_annual$subst_built[is.na(wind_treated_annual$subst_built)]<-0
+
+calculate_summary <- function(data, variables, group_vars) {
+  # Ensure group_vars are quosures for flexibility
+  group_vars <- syms(group_vars)
+  
+  # Iterate over variables and calculate summaries
+  map_dfr(variables, function(var) {
+    data %>%
+      group_by(!!!group_vars) %>% # Group by dynamic variables
+      summarize(
+        mean = mean(.data[[var]], na.rm = TRUE),
+        ci_lower = mean(.data[[var]], na.rm = TRUE) - qt(0.975, df = n() - 1) * sd(.data[[var]], na.rm = TRUE) / sqrt(n()),
+        ci_upper = mean(.data[[var]], na.rm = TRUE) + qt(0.975, df = n() - 1) * sd(.data[[var]], na.rm = TRUE) / sqrt(n()),
+        .groups = "drop"
+      ) %>%
+      mutate(variable = var) # Add variable name
+  })
+}
+# Example usage
+# List of variables to summarize
+wind_vars_month <- c("wind_jobs_endmonth","total_endmonth") # Replace with your variable names
+solar_vars_month <- c("solar_jobs_endmonth","total_endmonth") # Replace with your variable names
+wind_vars_annual <- c("pib_clean_constant2020_BRL","va_industria_constant2020_BRL","va_servicos_constant2020_BRL",  "total_receipt_BRL2020","total_establishment","populacao","total_jobs_3112") #
+solar_vars_annual <- c("pib_clean_constant2020_BRL","va_industria_constant2020_BRL","va_servicos_constant2020_BRL",  "total_receipt_BRL2020","total_establishment","populacao","total_jobs_3112") #
+
+# Grouping variables
+wind_group <- c("subst_built", "t_wind") # Replace with your grouping variables
+solar_group <- c("subst_built", "t_solar") # Replace with your grouping variables
+wind_group2 <- c("subst_built", "t_wind") # Replace with your grouping variables
+solar_group2 <- c("subst_built", "t_solar") # Replace with your grouping variables
+
+
+# Call the function
+wind_means_monthly <- calculate_summary(
+  data = wind_treated_monthly, 
+  variables = wind_vars_month, 
+  group_vars = wind_group
+)
+
+wind_means_annual <- calculate_summary(
+  data = wind_treated_annual, 
+  variables = wind_vars_annual, 
+  group_vars = wind_group
+)
+
+solar_means_monthly <- calculate_summary(
+  data = solar_treated_monthly, 
+  variables = solar_vars_month, 
+  group_vars = solar_group
+)
+
+
+solar_means_annual <- calculate_summary(
+  data = solar_treated_annual, 
+  variables = solar_vars_annual, 
+  group_vars = solar_group
+)
+
+wind_month_labels <- c(
+  "total_endmonth" = "Total Jobs",
+  "wind_jobs_endmonth" = "Wind-related jobs")
+
+solar_month_labels <- c(
+   "total_endmonth" = "Total Jobs",
+  "solar_jobs_endmonth" = "Solar-related jobs")
+
+
+annual_labels <- c(
+  "pib_clean_constant2020_BRL" = "GDP",
+  "va_industria_constant2020_BRL" = "Industry value-added",
+  "va_servicos_constant2020_BRL" = "Services value-added",
+  "total_receipt_BRL2020"= "Total Receipt",
+  "total_establishment"="Total no. of active firms",
+  "populacao"="Total Population",
+  "total_jobs_3112"="Total Employment")
+
+wind_means_month<-ggplot(wind_means_monthly %>% filter(t_wind > -37, t_wind < 37), 
+       aes(x = t_wind, y = mean, color = as.factor(subst_built))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+    geom_vline(xintercept = 0)+ geom_vline(xintercept = -24, linetype="dashed")+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = wind_month_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Months before/after commissioning",
+    y = "Avg. No of Jobs",
+    color =  "No Substation built (0) / Substation built within 10km +- 12 months of plant commissioning (1)",
+    fill =   "No Substation built (0) / Substation built within 10km +- 12 months of plant commissioning (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","wind_means_monthly_subst.png"),wind_means_month,  width = 3000, height=2000, units = "px")
+
+wind_annual_mean<-ggplot(wind_means_annual %>% filter(t_wind > -7, t_wind < 5), 
+       aes(x = t_wind, y = mean, color = as.factor(subst_built))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_vline(xintercept = 0)+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = annual_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Years before/after commissioning",
+    y = "",
+    color = "No Substation built (0) / Substation built within 10km +- 12 months of plant commissioning (1)",
+    fill =  "No Substation built (0) / Substation built within 10km +- 12 months of plant commissioning (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","wind_means_annual_subst.png"),wind_annual_mean,  width = 3000, height=2000, units = "px")
+
+
+solar_month_mean<-ggplot(solar_means_monthly %>% filter(t_solar > -48, t_solar < 37), 
+       aes(x = t_solar, y = mean, color = as.factor(subst_built))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_vline(xintercept = 0)+ geom_vline(xintercept = -24, linetype="dashed")+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = solar_month_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Months before/after commissioning",
+    y = "Avg. No of Jobs",
+    color =   "No Substation built (0) / Substation built within 10km +- 12 months of plant commissioning (1)",
+    fill =   "No Substation built (0) / Substation built within 10km +- 12 months of plant commissioning (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","solar_means_monthly_subst.png"),solar_month_mean,  width = 3000, height=2000, units = "px")
+
+solar_annual_mean<-ggplot(solar_means_annual %>% filter(t_solar > -7, t_solar < 5), 
+       aes(x = t_solar, y = mean, color = as.factor(subst_built))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_vline(xintercept = 0)+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = annual_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Years before/after commissioning",
+    y = "",
+    color =  "No Substation built (0) / Substation built within 10km +- 12 months of plant commissioning (1)",
+    fill =  "No Substation built (0) / Substation built within 10km +- 12 months of plant commissioning (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","solar_means_annual_subst.png"),solar_annual_mean,  width = 3000, height=2000, units = "px")
+```
+

@@ -1,0 +1,2257 @@
+---
+title: "4- monthly panel-employment"
+author: "Fabian Scheifele"
+date: "2023-03-06"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+1. Packages
+```{r setup, include=FALSE}
+suppressMessages(memory.limit(size = NA))
+
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","knitr","here", "data.table","basedosdados","bigrquery","janitor","fuzzyjoin","zoo","ggrepel","lubridate","stats"))
+
+`%notin%` <- Negate(`%in%`)
+gc()
+
+#create reverse cumulative sum function for leads
+revcumsum <- function(x){
+  x <- rev(cumsum(rev(x)))
+}
+
+```
+2. import data
+```{r}
+net_additions<-readRDS(here("raw","RAIS_monthly_netadditions.RDS"))
+annual_rais<-readRDS(here("intermediate","rais_annual_total2.RDS"))
+education_monthly<-readRDS(here("raw","RAIS_monthly_education.RDS"))
+#adapt class for merge
+annual_rais <- type.convert(annual_rais, as.is = TRUE)
+```
+
+3. aggregating monthly data
+```{r}
+total_jobs<-net_additions%>%group_by(id_municipio,ano,month)%>%
+  mutate(add_jobs_all=sum(monthly_addition,na.rm=TRUE))%>%
+  mutate(layoffs_jobs_all=sum(monthly_layoffs,na.rm=TRUE))%>%
+  mutate(net_jobs_all=sum(net_additions, na.rm = TRUE))%>%select(id_municipio,ano,month,add_jobs_all,layoffs_jobs_all,net_jobs_all)%>%
+  distinct()
+
+temp_jobs<-net_additions%>%filter(tipo_vinculo=="50")%>%
+  group_by(id_municipio,ano,month)%>%
+  mutate(add_jobs_temp=sum(monthly_addition,na.rm=TRUE))%>%
+  mutate(layoffs_jobs_temp=sum(monthly_layoffs,na.rm=TRUE))%>%
+  mutate(net_jobs_temp=sum(net_additions, na.rm = TRUE))%>%select(id_municipio,ano,month,add_jobs_temp,layoffs_jobs_temp,net_jobs_temp)%>%
+  distinct()
+
+cltdet_jobs<-net_additions%>%filter(tipo_vinculo %in% c("60","65","70","75","90","95","96","97"))%>%
+  group_by(id_municipio,ano,month)%>%
+  mutate(add_jobs_clt_det=sum(monthly_addition,na.rm=TRUE))%>%
+  mutate(layoffs_jobs_clt_det=sum(monthly_layoffs,na.rm=TRUE))%>%
+  mutate(net_jobs_clt_det=sum(net_additions, na.rm =TRUE))%>%
+    select(id_municipio,ano,month,add_jobs_clt_det,layoffs_jobs_clt_det,net_jobs_clt_det)%>%
+  distinct()
+
+
+cltind_jobs<-net_additions%>%filter(tipo_vinculo %in% c("10","15","20","25"))%>%
+  group_by(id_municipio,ano,month)%>%
+  mutate(add_jobs_clt_ind=sum(monthly_addition,na.rm=TRUE))%>%
+  mutate(layoffs_jobs_clt_ind=sum(monthly_layoffs,na.rm=TRUE))%>%
+  mutate(net_jobs_clt_ind=sum(net_additions, na.rm =TRUE))%>%
+    select(id_municipio,ano,month,add_jobs_clt_ind,layoffs_jobs_clt_ind,net_jobs_clt_ind)%>%
+  distinct()
+
+monthly_jobs<-left_join(total_jobs, temp_jobs, by=c("id_municipio", "ano","month"))%>%
+  left_join(cltdet_jobs, by=c("id_municipio", "ano","month"))%>%
+  left_join(cltind_jobs, by=c("id_municipio", "ano","month"))
+remove(total_jobs)
+remove(temp_jobs)
+remove(cltdet_jobs)
+remove(cltind_jobs)
+```
+
+4. Aggregating education-level monthly series
+```{r}
+#max. primary or incomplete secondary
+primary<-education_monthly%>%filter(grau_instrucao_apos_2005 %in% c(1:6))%>%
+  group_by(id_municipio,ano, month)%>%
+  mutate(primary_edu_add=sum(monthly_addition))%>%
+  mutate(primary_edu_sub=sum(monthly_layoffs))%>%
+  mutate(primary_edu_net=sum(net_additions))%>%
+  select(id_municipio,ano, month,primary_edu_add,primary_edu_sub,primary_edu_net)%>%distinct()
+  
+
+#secondary or incomplete university
+secondary<-education_monthly%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(7:8))%>%
+   group_by(id_municipio,ano, month)%>%
+  mutate(secondary_edu_add=sum(monthly_addition))%>%
+  mutate(secondary_edu_sub=sum(monthly_layoffs))%>%
+  mutate(secondary_edu_net=sum(net_additions))%>%
+  select(id_municipio,ano, month,secondary_edu_add,secondary_edu_sub,secondary_edu_net)%>%distinct()
+
+#tertiary complete
+tertiary<-education_monthly%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(9:11))%>%
+  group_by(id_municipio,ano, month)%>%
+  mutate(tertiary_edu_add=sum(monthly_addition))%>%
+  mutate(tertiary_edu_sub=sum(monthly_layoffs))%>%
+  mutate(tertiary_edu_net=sum(net_additions))%>%
+  select(id_municipio,ano, month,tertiary_edu_add,tertiary_edu_sub,tertiary_edu_net)%>%distinct()
+
+total_education<-full_join(primary, secondary, by=c("id_municipio","ano","month"))%>%
+  full_join(tertiary, by=c("id_municipio","ano","month"))
+
+remove(primary)
+remove(secondary)
+remove(tertiary)
+remove(education_monthly)
+
+#REPEAT FOR WIND
+education_monthly<-readRDS(here("raw","RAIS_monthly_education_wind.RDS"))
+
+primary_wind<-education_monthly%>%filter(grau_instrucao_apos_2005 %in% c(1:6))%>%
+  group_by(id_municipio,ano, month)%>%
+  mutate(wind_primary_edu_net=sum(net_additions))%>%
+  select(id_municipio,ano, month,wind_primary_edu_net)%>%distinct()
+  
+
+#secondary or incomplete university
+secondary_wind<-education_monthly%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(7:8))%>%
+   group_by(id_municipio,ano, month)%>%
+  mutate(wind_secondary_edu_net=sum(net_additions))%>%
+  select(id_municipio,ano, month,wind_secondary_edu_net)%>%distinct()
+
+#tertiary complete
+tertiary_wind<-education_monthly%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(9:11))%>%
+  group_by(id_municipio,ano, month)%>%
+  mutate(wind_tertiary_edu_net=sum(net_additions))%>%
+  select(id_municipio,ano, month,wind_tertiary_edu_net)%>%distinct()
+
+total_education_wind<-full_join(primary_wind, secondary_wind, by=c("id_municipio","ano","month"))%>%
+  full_join(tertiary_wind, by=c("id_municipio","ano","month"))
+
+remove(primary_wind)
+remove(secondary_wind)
+remove(tertiary_wind)
+
+#REPEAT FOR SOLAR
+education_monthly<-readRDS(here("raw","RAIS_monthly_education_solar.RDS"))
+
+primary_solar<-education_monthly%>%filter(grau_instrucao_apos_2005 %in% c(1:6))%>%
+  group_by(id_municipio,ano, month)%>%
+  mutate(solar_primary_edu_net=sum(net_additions))%>%
+  select(id_municipio,ano, month,solar_primary_edu_net)%>%distinct()
+  
+
+#secondary or incomplete university
+secondary_solar<-education_monthly%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(7:8))%>%
+   group_by(id_municipio,ano, month)%>%
+  mutate(solar_secondary_edu_net=sum(net_additions))%>%
+  select(id_municipio,ano, month,solar_secondary_edu_net)%>%distinct()
+
+#tertiary complete
+tertiary_solar<-education_monthly%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(9:11))%>%
+  group_by(id_municipio,ano, month)%>%
+  mutate(solar_tertiary_edu_net=sum(net_additions))%>%
+  select(id_municipio,ano, month,solar_tertiary_edu_net)%>%distinct()
+
+total_education_solar<-full_join(primary_solar, secondary_solar, by=c("id_municipio","ano","month"))%>%
+  full_join(tertiary_solar, by=c("id_municipio","ano","month"))
+
+remove(primary_solar)
+remove(secondary_solar)
+remove(tertiary_solar)
+```
+
+
+5. Merging monthly data with annual data to do re-centered time series
+```{r}
+merged<-full_join(annual_rais,monthly_jobs,by=c("id_municipio","ano"))
+merged<-merged%>%left_join(total_education, by=c("id_municipio","ano","month"))%>%
+  left_join(total_education_wind, by=c("id_municipio","ano","month"))%>%
+  left_join(total_education_solar, by=c("id_municipio","ano","month"))
+
+merged<-merged%>%arrange(id_municipio, ano, month)
+
+remove(total_education)
+
+remove(monthly_jobs)
+
+#full join only adds the 2000 observation which is required to start the series
+is_na<-merged%>%filter(is.na(month))%>%distinct(ano)
+remove(is_na)
+
+#monthly data contained some entries with missing municipality id, need to be removed
+merged<-merged%>%filter(!is.na(id_municipio))
+
+#keep only the net changes variables, plus end of year and date vars
+merged<-merged%>%select(ano, id_municipio, month, starts_with("net"),ends_with(c("net", "3112")))
+merged<-merged%>%relocate(month,.after = ano)
+remove(education_monthly)
+remove(net_additions)
+gc()
+```
+
+6. Creating the monthly time series
+```{r}
+#re-centering: at the end of each year the number of active links is used to re-start the series, to avoid that misreporting from monthly net labor additions to carry over to the next year 
+#lag
+merged<-merged%>%group_by(id_municipio)%>%
+  mutate(totaljobs_lag=lag(total_jobs_3112,n=12L))%>%
+  mutate(temp_jobs_lag=lag(temporary_3112,n=12L))%>%
+  mutate(clt_det_lag=lag(clt_det_3112,n=12L))%>%
+  mutate(clt_ind_lag=lag(clt_ind_3112,n=12L))%>%
+  mutate(primary_edu_lag=lag(primary_edu_3112,n=12L))%>%
+  mutate(secondary_edu_lag=lag(secondary_edu_3112,n=12L))%>%
+  mutate(tertiary_edu_lag=lag(tertiary_edu_3112,n=12L))%>%
+  mutate(solar_primary_edu_lag=lag(solar_primary_edu_3112,n=12L))%>%
+  mutate(solar_secondary_edu_lag=lag(solar_secondary_edu_3112,n=12L))%>%
+  mutate(solar_tertiary_edu_lag=lag(solar_tertiary_edu_3112,n=12L))%>%
+  mutate(wind_primary_edu_lag=lag(wind_primary_edu_3112,n=12L))%>%
+  mutate(wind_secondary_edu_lag=lag(wind_secondary_edu_3112,n=12L))%>%
+  mutate(wind_tertiary_edu_lag=lag(wind_tertiary_edu_3112,n=12L))
+
+#Filling lags for 2001
+merged<-merged %>% 
+  group_by(id_municipio,ano) %>% 
+  fill(totaljobs_lag, .direction = "downup")%>%
+   fill(temp_jobs_lag, .direction = "downup")%>%
+   fill(clt_det_lag, .direction = "downup")%>%
+   fill(clt_ind_lag, .direction = "downup")%>%
+   fill(primary_edu_lag, .direction = "downup")%>%
+   fill(secondary_edu_lag, .direction = "downup")%>%
+  fill(tertiary_edu_lag, .direction = "downup")%>%
+   fill(solar_primary_edu_lag, .direction = "downup")%>%
+   fill(solar_secondary_edu_lag, .direction = "downup")%>%
+  fill(solar_tertiary_edu_lag, .direction = "downup")%>%
+   fill(wind_primary_edu_lag, .direction = "downup")%>%
+   fill(wind_secondary_edu_lag, .direction = "downup")%>%
+  fill(wind_tertiary_edu_lag, .direction = "downup")
+
+
+#Creating monthly cumulative series for all variables
+merged<-merged%>%group_by(id_municipio,ano)%>%
+  mutate(total_endmonth = totaljobs_lag+cumsum(net_jobs_all))%>%
+  mutate(temp_endmonth = temp_jobs_lag+cumsum(net_jobs_temp))%>%
+  mutate(clt_det_endmonth = clt_det_lag+cumsum(net_jobs_clt_det))%>%
+  mutate(clt_ind_endmonth = clt_ind_lag+cumsum(net_jobs_clt_ind))%>%
+  mutate(primary_endmonth = primary_edu_lag+cumsum(primary_edu_net))%>%
+  mutate(secondary_endmonth = secondary_edu_lag+cumsum(secondary_edu_net))%>%
+  mutate(tertiary_endmonth = tertiary_edu_lag+cumsum(tertiary_edu_net))%>%
+  mutate(solar_primary_endmonth = solar_primary_edu_lag+cumsum(solar_primary_edu_net))%>%
+  mutate(solar_secondary_endmonth = solar_secondary_edu_lag+cumsum(solar_secondary_edu_net))%>%
+  mutate(solar_tertiary_endmonth = solar_tertiary_edu_lag+cumsum(solar_tertiary_edu_net))%>%
+  mutate(wind_primary_endmonth = wind_primary_edu_lag+cumsum(wind_primary_edu_net))%>%
+  mutate(wind_secondary_endmonth = wind_secondary_edu_lag+cumsum(wind_secondary_edu_net))%>%
+  mutate(wind_tertiary_endmonth = wind_tertiary_edu_lag+cumsum(wind_tertiary_edu_net))
+
+#create discrepancy variable
+merged<-merged%>%mutate(discrepancy_recentered=total_endmonth-total_jobs_3112)
+merged$discrepancy_recentered[merged$month!=12]<-NA  
+
+
+#replace the cumulative december values with the actual reported figure on 31.12 (reduces discrepancy)
+merged<-merged%>%group_by(id_municipio,ano)%>%
+  mutate(total_endmonth=if_else(month==12,total_jobs_3112,total_endmonth))%>%
+    mutate(temp_endmonth=if_else(month==12,temporary_3112,temp_endmonth))%>%
+  mutate(clt_det_endmonth=if_else(month==12,clt_det_3112,clt_det_endmonth))%>%
+  mutate(clt_ind_endmonth=if_else(month==12,clt_ind_3112,clt_ind_endmonth))%>%
+  mutate(primary_endmonth=if_else(month==12,primary_edu_3112,primary_endmonth))%>%
+  mutate(secondary_endmonth=if_else(month==12,secondary_edu_3112,secondary_endmonth))%>%
+  mutate(tertiary_endmonth=if_else(month==12,tertiary_edu_3112,tertiary_endmonth))%>%
+  mutate(solar_primary_endmonth=if_else(month==12,solar_primary_edu_3112,solar_primary_endmonth))%>%
+  mutate(solar_secondary_endmonth=if_else(month==12,solar_secondary_edu_3112,solar_secondary_endmonth))%>%
+  mutate(solar_tertiary_endmonth=if_else(month==12,solar_tertiary_edu_3112,solar_tertiary_endmonth))
+
+#reducing df to relevant columns
+final_monthly<-merged%>%select(contains(c("_endmonth","_3112","net","ano","id_municipio","month","discrepancy_recentered")))
+final_monthly <- final_monthly %>%
+  select(id_municipio, ano, month, everything())
+
+saveRDS(final_monthly, here("intermediate","monthly_rais_nosectors_final_nocontrols.RDS"))
+rm(list=ls())
+```
+
+7. create monthly time-series for sector specific data
+```{r}
+monthly_cnae_net<-readRDS(here("intermediate","RAIS_monthly_netadditions_cnae.RDS"))%>%filter(tipo_vinculo!=0)
+annual_cnae<-readRDS(here("intermediate","rais_cnae_annual.RDS"))
+```
+
+
+8. aggregate At municipality-year level (no sub differentiation by type of employment regime atm)
+```{r}
+monthly_cnae<-monthly_cnae_net%>%select(-tipo_vinculo)%>%group_by(id_municipio, ano, month)%>%
+  summarise_all(.funs = sum, na.rm=TRUE)
+
+#filter out values from the year 2006 because it is the first year and in order to start the time series we need the value of 31.12, so can start monthly series only in 2007
+
+monthly_cnae<-monthly_cnae%>%ungroup()%>%filter(ano>2006)
+all_years<-monthly_cnae%>%
+  expand(id_municipio, ano, month)
+all_years<-all_years%>%left_join(monthly_cnae, by=c("id_municipio", "ano","month"))
+
+annual_cnae<-annual_cnae%>%ungroup()
+all_years2<-annual_cnae%>%expand(id_municipio, ano)
+all_years2<-all_years2%>%left_join(annual_cnae, by=c("id_municipio", "ano"))
+
+all_years<-all_years%>%full_join(all_years2, by=c("id_municipio","ano"))
+all_years<-all_years%>%arrange(id_municipio, ano, month)
+
+all_years<- all_years %>%
+  mutate(across(-c(id_municipio, ano, month), ~ifelse(is.na(.), 0, .)))
+
+#re-centering: at the end of each year the number of active links is used to re-start the series, to avoid that misreporting from previous year carry over to the next year 
+#lag
+all_years<-all_years%>%arrange(id_municipio, ano, month)
+
+all_years <- all_years %>%
+  group_by(id_municipio) %>%
+    mutate( across(contains('3112'), ~lag(., 12),.names="{col}_lag"))
+
+
+#Filling lags for 2007
+all_years<-all_years %>% 
+  group_by(id_municipio,ano) %>%
+  fill(contains("_lag"), .direction = "downup")
+
+#CONTINUE HERE
+#Creating monthly cumulative series for all variables
+all_years<-all_years%>%group_by(id_municipio,ano)%>%
+  mutate(solar_comp_endmonth=solar_component_jobs_3112_total_lag+cumsum(solar_comp_net))%>%
+  mutate(solar_inst_endmonth=solar_installation_jobs_3112_total_lag+cumsum(solar_inst_net))%>%
+  mutate(solar_om_endmonth=solar_om_jobs_3112_total_lag+cumsum(solar_om_net))%>%
+  mutate(wind_comp_endmonth=wind_component_jobs_3112_total_lag+cumsum(wind_comp_net))%>%
+  mutate(wind_inst_endmonth=wind_installation_jobs_3112_total_lag+cumsum(wind_inst_net))%>%
+  mutate(wind_om_endmonth=wind_om_jobs_3112_total_lag+cumsum(wind_om_net))
+
+
+#replace the cumulative december values with the actual reported figure on 31.12 (reduces discrepancy)
+all_years<-all_years%>%group_by(id_municipio,ano)%>%
+  mutate(solar_comp_endmonth=if_else(month==12,solar_component_jobs_3112_total,solar_comp_endmonth))%>%
+    mutate(solar_inst_endmonth=if_else(month==12,solar_installation_jobs_3112_total,solar_inst_endmonth))%>%
+  mutate(solar_om_endmonth=if_else(month==12,solar_om_jobs_3112_total,solar_om_endmonth))%>%
+  mutate(wind_comp_endmonth=if_else(month==12,wind_component_jobs_3112_total,wind_comp_endmonth))%>%
+  mutate(wind_inst_endmonth=if_else(month==12,wind_installation_jobs_3112_total,wind_inst_endmonth))%>%
+  mutate(wind_om_endmonth=if_else(month==12,wind_om_jobs_3112_total,wind_om_endmonth))
+
+final_monthly_sector<-all_years%>%
+  select(ends_with(c("_endmonth","month","ano","id_municipio","_net","_3112_total")))%>%arrange(id_municipio, ano,month)
+final_monthly_sector <- final_monthly_sector %>%
+  select(id_municipio, ano, month, everything())
+
+saveRDS(final_monthly_sector, here("intermediate","monthly_rais_sector_final_nocontrols.RDS"))
+rm(list=ls())
+```
+
+6. adding monthly wage data
+```{r}
+wages_monthly<-readRDS(here("raw","monthly_wages_no_sector.RDS"))
+wages_monthly <- type.convert(wages_monthly, as.is = TRUE)
+
+#Admissions without admission month get january as start month(were already active) and rows without end date get december as end month (remained active)
+wages_monthly$mes_admissao[is.na(wages_monthly$mes_admissao)]<-1
+wages_monthly$mes_desligamento[is.na(wages_monthly$mes_desligamento)]<-12
+wages_monthly<-wages_monthly%>%mutate(duration=(mes_desligamento-mes_admissao)+1)
+#wages_monthly_red<-wages_monthly%>%filter(duration!=12)
+#all_year<-wages_monthly%>%filter(duration==12)
+
+wages_monthly<-wages_monthly%>%
+  mutate("month_1"=if_else(mes_admissao<=1,no_workers,NA))%>%
+  mutate("month_2"=if_else(mes_admissao<=2 & mes_desligamento>1,no_workers,NA))%>%
+  mutate("month_3"=if_else(mes_admissao<=3 & mes_desligamento>2,no_workers,NA))%>%
+  mutate("month_4"=if_else(mes_admissao<=4 & mes_desligamento>3,no_workers,NA))%>%
+  mutate("month_5"=if_else(mes_admissao<=5 & mes_desligamento>4,no_workers,NA))%>%
+  mutate("month_6"=if_else(mes_admissao<=6 & mes_desligamento>5,no_workers,NA))%>%
+  mutate("month_7"=if_else(mes_admissao<=7 & mes_desligamento>6,no_workers,NA))%>%
+  mutate("month_8"=if_else(mes_admissao<=8 & mes_desligamento>7,no_workers,NA))%>%
+  mutate("month_9"=if_else(mes_admissao<=9 & mes_desligamento>8,no_workers,NA))%>%
+  mutate("month_10"=if_else(mes_admissao<=10 & mes_desligamento>9,no_workers,NA))%>%
+  mutate("month_11"=if_else(mes_admissao<=11 & mes_desligamento>10,no_workers,NA))%>%
+  mutate("month_12"=if_else(mes_admissao<=12 & mes_desligamento>11,no_workers,NA))
+
+months <- colnames(wages_monthly)[grep("^month_", colnames(wages_monthly))]
+
+
+wages_aggregated <- wages_monthly %>%
+  group_by(id_municipio, ano) %>%
+  summarise(across(
+    .cols = months,  # Assuming "months" is a vector containing the names of the month columns
+    .fns = ~ sum(avg_wage * .x, na.rm = TRUE) / sum(.x, na.rm = TRUE),
+    .names = "avg_wage_{.col}"
+  ))
+
+
+wages_aggregated_long <- wages_aggregated %>%
+  pivot_longer(
+    cols = starts_with("avg_wage"),
+    names_to = "column_name",
+    values_to = "avg_wage"
+  ) %>%
+  mutate(month = str_extract(column_name, "\\d+")) %>%
+  mutate(month = as.integer(month))
+
+wages_aggregated_long<-wages_aggregated_long%>%select(-column_name)
+
+#deflate the wages to 2020, since it is the average annual wage and not monthly wages, deflation will be done on annual not monthly level
+ipca<-readRDS(here("raw","ipca_deflator.RDS"))
+wages_aggregated_long<-wages_aggregated_long%>%left_join(ipca, by=c("ano"))
+wages_aggregated_long<-wages_aggregated_long%>%mutate(avg_wage_2020BRL=avg_wage*deflator)
+saveRDS(wages_aggregated_long, here("intermediate","monthly_wages_deflated.RDS"))
+rm(list=ls())
+
+```
+
+6b. adding monthly wage data- wind
+```{r}
+wages_monthly<-readRDS(here("raw","monthly_wages_wind.RDS"))
+wages_monthly <- type.convert(wages_monthly, as.is = TRUE)
+
+#Admissions without admission month get january as start month(were already active) and rows without end date get december as end month (remained active)
+wages_monthly$mes_admissao[is.na(wages_monthly$mes_admissao)]<-1
+wages_monthly$mes_desligamento[is.na(wages_monthly$mes_desligamento)]<-12
+wages_monthly<-wages_monthly%>%mutate(duration=(mes_desligamento-mes_admissao)+1)
+
+
+wages_monthly<-wages_monthly%>%
+  mutate("month_1"=if_else(mes_admissao<=1,no_workers,NA))%>%
+  mutate("month_2"=if_else(mes_admissao<=2 & mes_desligamento>1,no_workers,NA))%>%
+  mutate("month_3"=if_else(mes_admissao<=3 & mes_desligamento>2,no_workers,NA))%>%
+  mutate("month_4"=if_else(mes_admissao<=4 & mes_desligamento>3,no_workers,NA))%>%
+  mutate("month_5"=if_else(mes_admissao<=5 & mes_desligamento>4,no_workers,NA))%>%
+  mutate("month_6"=if_else(mes_admissao<=6 & mes_desligamento>5,no_workers,NA))%>%
+  mutate("month_7"=if_else(mes_admissao<=7 & mes_desligamento>6,no_workers,NA))%>%
+  mutate("month_8"=if_else(mes_admissao<=8 & mes_desligamento>7,no_workers,NA))%>%
+  mutate("month_9"=if_else(mes_admissao<=9 & mes_desligamento>8,no_workers,NA))%>%
+  mutate("month_10"=if_else(mes_admissao<=10 & mes_desligamento>9,no_workers,NA))%>%
+  mutate("month_11"=if_else(mes_admissao<=11 & mes_desligamento>10,no_workers,NA))%>%
+  mutate("month_12"=if_else(mes_admissao<=12 & mes_desligamento>11,no_workers,NA))
+
+months <- colnames(wages_monthly)[grep("^month_", colnames(wages_monthly))]
+
+
+wages_aggregated <- wages_monthly %>%
+  group_by(id_municipio, ano) %>%
+  summarise(across(
+    .cols = months,  # Assuming "months" is a vector containing the names of the month columns
+    .fns = ~ sum(avg_wage * .x, na.rm = TRUE) / sum(.x, na.rm = TRUE),
+    .names = "avg_wage_{.col}"
+  ))
+
+
+wages_aggregated_long <- wages_aggregated %>%
+  pivot_longer(
+    cols = starts_with("avg_wage"),
+    names_to = "column_name",
+    values_to = "avg_wage"
+  ) %>%
+  mutate(month = str_extract(column_name, "\\d+")) %>%
+  mutate(month = as.integer(month))
+
+wages_aggregated_long<-wages_aggregated_long%>%select(-column_name)
+
+#deflate the wages to 2020, since it is the average annual wage and not monthly wages, deflation will be done on annual not monthly level
+ipca<-readRDS(here("raw","ipca_deflator.RDS"))
+wages_aggregated_long<-wages_aggregated_long%>%left_join(ipca, by=c("ano"))
+wages_aggregated_long<-wages_aggregated_long%>%mutate(avg_wage_2020BRL=avg_wage*deflator)%>%
+  rename(wind_wage_2020BRL=avg_wage_2020BRL)
+saveRDS(wages_aggregated_long, here("intermediate","wind_monthly_wages_deflated.RDS"))
+rm(list=ls())
+```
+
+6c. adding monthly wage data- solar
+```{r}
+wages_monthly<-readRDS(here("raw","monthly_wages_solar.RDS"))
+wages_monthly <- type.convert(wages_monthly, as.is = TRUE)
+
+#Admissions without admission month get january as start month(were already active) and rows without end date get december as end month (remained active)
+wages_monthly$mes_admissao[is.na(wages_monthly$mes_admissao)]<-1
+wages_monthly$mes_desligamento[is.na(wages_monthly$mes_desligamento)]<-12
+wages_monthly<-wages_monthly%>%mutate(duration=(mes_desligamento-mes_admissao)+1)
+
+
+wages_monthly<-wages_monthly%>%
+  mutate("month_1"=if_else(mes_admissao<=1,no_workers,NA))%>%
+  mutate("month_2"=if_else(mes_admissao<=2 & mes_desligamento>1,no_workers,NA))%>%
+  mutate("month_3"=if_else(mes_admissao<=3 & mes_desligamento>2,no_workers,NA))%>%
+  mutate("month_4"=if_else(mes_admissao<=4 & mes_desligamento>3,no_workers,NA))%>%
+  mutate("month_5"=if_else(mes_admissao<=5 & mes_desligamento>4,no_workers,NA))%>%
+  mutate("month_6"=if_else(mes_admissao<=6 & mes_desligamento>5,no_workers,NA))%>%
+  mutate("month_7"=if_else(mes_admissao<=7 & mes_desligamento>6,no_workers,NA))%>%
+  mutate("month_8"=if_else(mes_admissao<=8 & mes_desligamento>7,no_workers,NA))%>%
+  mutate("month_9"=if_else(mes_admissao<=9 & mes_desligamento>8,no_workers,NA))%>%
+  mutate("month_10"=if_else(mes_admissao<=10 & mes_desligamento>9,no_workers,NA))%>%
+  mutate("month_11"=if_else(mes_admissao<=11 & mes_desligamento>10,no_workers,NA))%>%
+  mutate("month_12"=if_else(mes_admissao<=12 & mes_desligamento>11,no_workers,NA))
+
+months <- colnames(wages_monthly)[grep("^month_", colnames(wages_monthly))]
+
+
+wages_aggregated <- wages_monthly %>%
+  group_by(id_municipio, ano) %>%
+  summarise(across(
+    .cols = months,  # Assuming "months" is a vector containing the names of the month columns
+    .fns = ~ sum(avg_wage * .x, na.rm = TRUE) / sum(.x, na.rm = TRUE),
+    .names = "avg_wage_{.col}"
+  ))
+
+
+wages_aggregated_long <- wages_aggregated %>%
+  pivot_longer(
+    cols = starts_with("avg_wage"),
+    names_to = "column_name",
+    values_to = "avg_wage"
+  ) %>%
+  mutate(month = str_extract(column_name, "\\d+")) %>%
+  mutate(month = as.integer(month))
+
+wages_aggregated_long<-wages_aggregated_long%>%select(-column_name)
+
+#deflate the wages to 2020, since it is the average annual wage and not monthly wages, deflation will be done on annual not monthly level
+ipca<-readRDS(here("raw","ipca_deflator.RDS"))
+wages_aggregated_long<-wages_aggregated_long%>%left_join(ipca, by=c("ano"))
+wages_aggregated_long<-wages_aggregated_long%>%mutate(avg_wage_2020BRL=avg_wage*deflator)%>%
+  rename(solar_wage_2020BRL=avg_wage_2020BRL)
+saveRDS(wages_aggregated_long, here("intermediate","solar_monthly_wages_deflated.RDS"))
+rm(list=ls())
+```
+
+6d Occupational codes
+```{r}
+cbo_solar_monthly<-readRDS(here("raw","monthly_cbo_solar.RDS"))
+cbo_solar_monthly <- type.convert(cbo_solar_monthly, as.is = TRUE)
+
+#Admissions without admission month get january as start month(were already active) and rows without end date get december as end month (remained active)
+cbo_solar_monthly$mes_admissao[is.na(cbo_solar_monthly$mes_admissao)]<-1
+cbo_solar_monthly$mes_desligamento[is.na(cbo_solar_monthly$mes_desligamento)]<-12
+cbo_solar_monthly<-cbo_solar_monthly%>%mutate(duration=(mes_desligamento-mes_admissao)+1)
+
+
+cbo_solar_monthly<-cbo_solar_monthly%>%
+  mutate("month_1"=if_else(mes_admissao<=1,no_workers,NA))%>%
+  mutate("month_2"=if_else(mes_admissao<=2 & mes_desligamento>1,no_workers,NA))%>%
+  mutate("month_3"=if_else(mes_admissao<=3 & mes_desligamento>2,no_workers,NA))%>%
+  mutate("month_4"=if_else(mes_admissao<=4 & mes_desligamento>3,no_workers,NA))%>%
+  mutate("month_5"=if_else(mes_admissao<=5 & mes_desligamento>4,no_workers,NA))%>%
+  mutate("month_6"=if_else(mes_admissao<=6 & mes_desligamento>5,no_workers,NA))%>%
+  mutate("month_7"=if_else(mes_admissao<=7 & mes_desligamento>6,no_workers,NA))%>%
+  mutate("month_8"=if_else(mes_admissao<=8 & mes_desligamento>7,no_workers,NA))%>%
+  mutate("month_9"=if_else(mes_admissao<=9 & mes_desligamento>8,no_workers,NA))%>%
+  mutate("month_10"=if_else(mes_admissao<=10 & mes_desligamento>9,no_workers,NA))%>%
+  mutate("month_11"=if_else(mes_admissao<=11 & mes_desligamento>10,no_workers,NA))%>%
+  mutate("month_12"=if_else(mes_admissao<=12 & mes_desligamento>11,no_workers,NA))
+
+#add skill level data and merge to main data
+skill_level<- read_excel(here("raw","QBC_Dados.xlsx"), sheet="Ocupação")%>%select(1,8)
+skill_level$CodCBO<-as.integer(skill_level$CodCBO)
+cbo_solar_monthly<- cbo_solar_monthly%>%
+  left_join(skill_level, by=c("cbo_2002"="CodCBO"))
+
+length(cbo_solar_monthly$NivelOcupacao[is.na(cbo_solar_monthly$NivelOcupacao)])/length(cbo_solar_monthly$NivelOcupacao)
+
+cbo_solar_monthly<-cbo_solar_monthly%>%filter(!is.na(NivelOcupacao))
+
+months <- colnames(cbo_solar_monthly)[grep("^month_", colnames(cbo_solar_monthly))]
+
+#Create weighted average of skill level at municipality level
+cbo_solar_aggregated <- cbo_solar_monthly %>%
+  group_by(id_municipio, ano) %>%
+  summarise(across(
+    .cols = months,  # Assuming "months" is a vector containing the names of the month columns
+    .fns = ~ sum(NivelOcupacao * .x, na.rm = TRUE) / sum(.x, na.rm = TRUE),
+    .names = "avg_skill_{.col}"
+  ))
+
+
+
+cbo_solar_aggregated_long <- cbo_solar_aggregated %>%
+  pivot_longer(
+    cols = starts_with("avg_skill"),
+    names_to = "column_name",
+    values_to = "avg_skill"
+  ) %>%
+  mutate(month = str_extract(column_name, "\\d+")) %>%
+  mutate(month = as.integer(month))
+
+#Months without any occupation in these sectors is NaN and has to be transformed to NA
+cbo_solar_aggregated_long<-cbo_solar_aggregated_long%>%select(-column_name)
+cbo_solar_aggregated_long$avg_skill[is.nan(cbo_solar_aggregated_long$avg_skill)]<-NA
+cbo_solar_aggregated_long<-cbo_solar_aggregated_long%>%rename(avg_skill_solar=avg_skill)
+saveRDS(cbo_solar_aggregated_long, here("intermediate","skill_level_solar_monthly.RDS"))
+
+#Repeat for wind
+cbo_wind_monthly<-readRDS(here("raw","monthly_cbo_wind.RDS"))
+cbo_wind_monthly <- type.convert(cbo_wind_monthly, as.is = TRUE)
+
+#Admissions without admission month get january as start month(were already active) and rows without end date get december as end month (remained active)
+cbo_wind_monthly$mes_admissao[is.na(cbo_wind_monthly$mes_admissao)]<-1
+cbo_wind_monthly$mes_desligamento[is.na(cbo_wind_monthly$mes_desligamento)]<-12
+cbo_wind_monthly<-cbo_wind_monthly%>%mutate(duration=(mes_desligamento-mes_admissao)+1)
+
+cbo_wind_monthly<-cbo_wind_monthly%>%
+  mutate("month_1"=if_else(mes_admissao<=1,no_workers,NA))%>%
+  mutate("month_2"=if_else(mes_admissao<=2 & mes_desligamento>1,no_workers,NA))%>%
+  mutate("month_3"=if_else(mes_admissao<=3 & mes_desligamento>2,no_workers,NA))%>%
+  mutate("month_4"=if_else(mes_admissao<=4 & mes_desligamento>3,no_workers,NA))%>%
+  mutate("month_5"=if_else(mes_admissao<=5 & mes_desligamento>4,no_workers,NA))%>%
+  mutate("month_6"=if_else(mes_admissao<=6 & mes_desligamento>5,no_workers,NA))%>%
+  mutate("month_7"=if_else(mes_admissao<=7 & mes_desligamento>6,no_workers,NA))%>%
+  mutate("month_8"=if_else(mes_admissao<=8 & mes_desligamento>7,no_workers,NA))%>%
+  mutate("month_9"=if_else(mes_admissao<=9 & mes_desligamento>8,no_workers,NA))%>%
+  mutate("month_10"=if_else(mes_admissao<=10 & mes_desligamento>9,no_workers,NA))%>%
+  mutate("month_11"=if_else(mes_admissao<=11 & mes_desligamento>10,no_workers,NA))%>%
+  mutate("month_12"=if_else(mes_admissao<=12 & mes_desligamento>11,no_workers,NA))
+
+#add skill level data and merge to main data
+skill_level<- read_excel(here("raw","QBC_Dados.xlsx"), sheet="Ocupação")%>%select(1,8)
+skill_level$CodCBO<-as.integer(skill_level$CodCBO)
+cbo_wind_monthly<- cbo_wind_monthly%>%
+  left_join(skill_level, by=c("cbo_2002"="CodCBO"))
+
+length(cbo_wind_monthly$NivelOcupacao[is.na(cbo_wind_monthly$NivelOcupacao)])/length(cbo_wind_monthly$NivelOcupacao)
+
+cbo_wind_monthly<-cbo_wind_monthly%>%filter(!is.na(NivelOcupacao))
+
+months <- colnames(cbo_wind_monthly)[grep("^month_", colnames(cbo_wind_monthly))]
+
+#Create weighted average of skill level at municipality level
+cbo_wind_aggregated <- cbo_wind_monthly %>%
+  group_by(id_municipio, ano) %>%
+  summarise(across(
+    .cols = months,  # Assuming "months" is a vector containing the names of the month columns
+    .fns = ~ sum(NivelOcupacao * .x, na.rm = TRUE) / sum(.x, na.rm = TRUE),
+    .names = "avg_skill_{.col}"
+  ))
+
+
+
+cbo_wind_aggregated_long <- cbo_wind_aggregated %>%
+  pivot_longer(
+    cols = starts_with("avg_skill"),
+    names_to = "column_name",
+    values_to = "avg_skill"
+  ) %>%
+  mutate(month = str_extract(column_name, "\\d+")) %>%
+  mutate(month = as.integer(month))
+
+#Months without any occupation in these sectors is NaN and has to be transformed to NA
+cbo_wind_aggregated_long<-cbo_wind_aggregated_long%>%select(-column_name)
+cbo_wind_aggregated_long$avg_skill[is.nan(cbo_wind_aggregated_long$avg_skill)]<-NA
+cbo_wind_aggregated_long<-cbo_wind_aggregated_long%>%rename(avg_skill_wind=avg_skill)
+saveRDS(cbo_wind_aggregated_long, here("intermediate","skill_level_wind_monthly.RDS"))
+
+#Repeat for all CBO codes
+cbo_all_monthly<-readRDS(here("raw","monthly_cbo_no_sector.RDS"))
+cbo_all_monthly <- type.convert(cbo_all_monthly, as.is = TRUE)
+
+#Admissions without admission month get january as start month(were already active) and rows without end date get december as end month (remained active)
+cbo_all_monthly$mes_admissao[is.na(cbo_all_monthly$mes_admissao)]<-1
+cbo_all_monthly$mes_desligamento[is.na(cbo_all_monthly$mes_desligamento)]<-12
+cbo_all_monthly<-cbo_all_monthly%>%mutate(duration=(mes_desligamento-mes_admissao)+1)
+#cbo_all_monthly_red<-cbo_all_monthly%>%filter(duration!=12)
+#all_year<-cbo_all_monthly%>%filter(duration==12)
+
+cbo_all_monthly<-cbo_all_monthly%>%
+  mutate("month_1"=if_else(mes_admissao<=1,no_workers,NA))%>%
+  mutate("month_2"=if_else(mes_admissao<=2 & mes_desligamento>1,no_workers,NA))%>%
+  mutate("month_3"=if_else(mes_admissao<=3 & mes_desligamento>2,no_workers,NA))%>%
+  mutate("month_4"=if_else(mes_admissao<=4 & mes_desligamento>3,no_workers,NA))%>%
+  mutate("month_5"=if_else(mes_admissao<=5 & mes_desligamento>4,no_workers,NA))%>%
+  mutate("month_6"=if_else(mes_admissao<=6 & mes_desligamento>5,no_workers,NA))%>%
+  mutate("month_7"=if_else(mes_admissao<=7 & mes_desligamento>6,no_workers,NA))%>%
+  mutate("month_8"=if_else(mes_admissao<=8 & mes_desligamento>7,no_workers,NA))%>%
+  mutate("month_9"=if_else(mes_admissao<=9 & mes_desligamento>8,no_workers,NA))%>%
+  mutate("month_10"=if_else(mes_admissao<=10 & mes_desligamento>9,no_workers,NA))%>%
+  mutate("month_11"=if_else(mes_admissao<=11 & mes_desligamento>10,no_workers,NA))%>%
+  mutate("month_12"=if_else(mes_admissao<=12 & mes_desligamento>11,no_workers,NA))
+
+#add skill level data and merge to main data
+skill_level<- read_excel(here("raw","QBC_Dados.xlsx"), sheet="Ocupação")%>%select(1,8)
+skill_level$CodCBO<-as.integer(skill_level$CodCBO)
+cbo_all_monthly<- cbo_all_monthly%>%
+  left_join(skill_level, by=c("cbo_2002"="CodCBO"))
+
+length(cbo_all_monthly$NivelOcupacao[is.na(cbo_all_monthly$NivelOcupacao)])/length(cbo_all_monthly$NivelOcupacao)
+
+cbo_all_monthly<-cbo_all_monthly%>%filter(!is.na(NivelOcupacao))
+
+months <- colnames(cbo_all_monthly)[grep("^month_", colnames(cbo_all_monthly))]
+
+#Create weighted average of skill level at municipality level
+cbo_all_aggregated <- cbo_all_monthly %>%
+  group_by(id_municipio, ano) %>%
+  summarise(across(
+    .cols = months,  # Assuming "months" is a vector containing the names of the month columns
+    .fns = ~ sum(NivelOcupacao * .x, na.rm = TRUE) / sum(.x, na.rm = TRUE),
+    .names = "avg_skill_{.col}"
+  ))
+
+
+
+cbo_all_aggregated_long <- cbo_all_aggregated %>%
+  pivot_longer(
+    cols = starts_with("avg_skill"),
+    names_to = "column_name",
+    values_to = "avg_skill"
+  ) %>%
+  mutate(month = str_extract(column_name, "\\d+")) %>%
+  mutate(month = as.integer(month))
+
+#Months without any occupation in these sectors is NaN and has to be transformed to NA
+cbo_all_aggregated_long<-cbo_all_aggregated_long%>%select(-column_name)
+cbo_all_aggregated_long$avg_skill[is.nan(cbo_all_aggregated_long$avg_skill)]<-NA
+cbo_all_aggregated_long<-cbo_all_aggregated_long%>%rename(avg_skill_all=avg_skill)
+saveRDS(cbo_all_aggregated_long, here("intermediate","skill_level_all_monthly.RDS"))
+```
+
+
+7. adding the firm creation data and sector-specific RAIS
+```{r}
+firms<-readRDS(here("raw","cnpj_cnae_month_year_2005_2022.RDS"))%>%filter(year>2006)
+final_monthly<-readRDS(here("intermediate","monthly_rais_nosectors_final_nocontrols.RDS"))
+firms <- type.convert(firms, as.is = TRUE)
+
+all_firms<-firms%>%group_by(id_municipio, year, month)%>%
+  summarise(no_establishments_cnpj=sum(establishments_founded,na.rm = TRUE),
+            no_mother_companies=sum(mother_companies_founded,na.rm = TRUE),
+            no_foreign_establishment=sum(foreign_owned_establishment,na.rm = TRUE))
+
+#We do full join rather than left-join so we can keep the 2022 firm creation data for analysis
+final_monthly_full_join<-full_join(final_monthly,all_firms, by=c("id_municipio", "ano"="year","month"))
+
+#expand to all municipality-year-month options
+expand<-final_monthly_full_join%>%ungroup()%>%expand(id_municipio,ano, month)
+expand<-expand%>%left_join(final_monthly_full_join, by=c("id_municipio","ano","month"))
+
+#fill in empty year-month-municipality cells with zeros (no companies founded in these months)
+expand[,  26:28][is.na(expand[, 26:28])] <- 0
+saveRDS(expand, here("intermediate","monthly_rais_nosectors_final_nocontrols.RDS"))
+
+#Repeat: Also add sector-specific firm data for sector-level data
+final_monthly_sector<-readRDS(here("intermediate","monthly_rais_sector_final_nocontrols.RDS"))%>%select(-ends_with("_solar"),
+                                                                                                        -ends_with("_wind"))
+wind_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet = "wind_related cnae")
+solar_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet ="solar_related_CNAE_")
+
+
+wind_firms<-firms%>%
+  filter(cnae_fiscal_principal %in% wind_codes$cnae)%>%
+  group_by(id_municipio, year, month)%>%
+  summarise(no_establishments_wind=sum(establishments_founded,na.rm = TRUE),
+            mother_companies_wind=sum(mother_companies_founded,na.rm = TRUE),
+            foreign_establishment_wind=sum(foreign_owned_establishment,na.rm = TRUE))
+
+solar_firms<-firms%>%
+  filter(cnae_fiscal_principal %in% solar_codes$cnae)%>%
+  group_by(id_municipio, year, month)%>%
+  summarise(no_establishments_solar=sum(establishments_founded,na.rm = TRUE),
+            mother_companies_solar=sum(mother_companies_founded,na.rm = TRUE),
+            foreign_establishment_solar=sum(foreign_owned_establishment,na.rm = TRUE))
+
+#Restrict to 2007+ (should already be by design, but just in case)
+solar_firms<-solar_firms%>%filter(year>2006)
+wind_firms<-wind_firms%>%filter(year>2006)
+
+#Like above doing full joins to also have the 2022 years
+final_monthly_sector_full_join<-final_monthly_sector%>%
+  full_join(wind_firms,by=c("id_municipio", "ano"="year","month"))
+
+final_monthly_sector_full_join<-final_monthly_sector_full_join%>%
+  full_join(solar_firms, by=c("id_municipio", "ano"="year","month"))
+
+##expand the dataset to have all year-month-municipality combinations. there are around 1300 municipalities that dont have any jobs in these CNAE codes, will create empty rows, because might be needed for matching
+
+all_comb<-final_monthly_sector_full_join%>%ungroup()%>%expand(ano,month,id_municipio)
+all_comb<-all_comb%>%left_join(final_monthly_sector_full_join,by=c("ano","month","id_municipio"))
+all_comb<-all_comb%>%arrange(id_municipio, ano, month)
+
+#CHECK HERE BECAUSE RELATIVE ROW POSITIONS CHOSEN FOR OPERATION (COULD POTENTIALLY CHANGE IF OTHER COLUMN ADDED BEFORE)
+all_comb[,  22:27][is.na(all_comb[, 22:27])] <- 0
+all_comb<-all_comb%>%filter(ano>2006)
+all_comb<-all_comb%>%filter(!is.na(month))
+saveRDS(all_comb, here("intermediate","monthly_rais_sector_final_nocontrols.RDS"))
+rm(list=ls())
+```
+
+9. adding the outside jobs data
+```{r}
+monthly_panel<- readRDS(here("intermediate","monthly_rais_sector_final_nocontrols.RDS"))
+outside_annual<-readRDS(here("raw","jobs_from_outside.RDS"))%>%filter(ano>2005)%>%select(-jobs_from_outside)
+outside_wind<- readRDS(here("raw","net_additions_outside_wind.RDS"))
+outside_solar<- readRDS(here("raw","net_additions_outside_solar.RDS"))
+outside_all<- readRDS(here("raw", "net_additions_outside.RDS"))
+
+#between 2012 and 2016 numbers outside job numbers are insufficiently reported., other years are fine
+years<-outside_annual%>%ungroup()%>%group_by(ano)%>%summarise(no=n_distinct(id_municipio_trabalho))
+years_combo<-outside_annual%>%ungroup()%>%expand(id_municipio_trabalho,ano)
+outside_annual<-left_join(years_combo,outside_annual, by=c("id_municipio_trabalho", "ano"))
+
+#if years 2006-2011 or 2017-2022, NA is assumed to be zero (no outside jobs in this municipality)
+outside_annual$jobs_from_outside3112[is.na(outside_annual$jobs_from_outside3112)& outside_annual$ano %in% c(2006:2011, 2017:2022)]<-0
+outside_annual$solar_jobs_from_outside3112[is.na(outside_annual$solar_jobs_from_outside3112)& outside_annual$ano %in% c(2006:2011, 2017:2022)]<-0
+outside_annual$wind_jobs_from_outside3112[is.na(outside_annual$wind_jobs_from_outside3112)& outside_annual$ano %in% c(2006:2011, 2017:2022)]<-0
+
+months<-c(1:12)
+outside_annual <- outside_annual %>%
+  # Create a combination of id_municipio and ano
+  crossing(month = months)
+
+outside_annual<- outside_annual%>%
+  left_join(outside_all, by=c("id_municipio_trabalho","ano", "month"))%>%
+    left_join(outside_wind, by=c("id_municipio_trabalho","ano", "month"))%>%
+  left_join(outside_solar, by=c("id_municipio_trabalho","ano", "month"))
+
+#if years 2006-2011 or 2017-2022, NA is assumed to be zero (no outside jobs in this municipality)
+outside_annual$net_add_outside[is.na(outside_annual$net_add_outside)& outside_annual$ano %in% c(2006:2011, 2017:2022)]<-0
+outside_annual$net_add_outside_solar[is.na(outside_annual$net_add_outside_solar)& outside_annual$ano %in% c(2006:2011, 2017:2022)]<-0
+outside_annual$net_add_outside_wind[is.na(outside_annual$net_add_outside_wind)& outside_annual$ano %in% c(2006:2011, 2017:2022)]<-0
+
+
+
+outside_annual<-outside_annual%>%arrange(id_municipio_trabalho, ano, month)%>%
+  group_by(id_municipio_trabalho)%>%
+  mutate(jobs_from_outside3112_lag=lag(jobs_from_outside3112,n=12L),
+         solar_jobs_from_outside3112_lag=lag(solar_jobs_from_outside3112,n=12L),
+         wind_jobs_from_outside3112_lag=lag(wind_jobs_from_outside3112,n=12L))
+
+#Filling lags
+outside_annual<-outside_annual %>% 
+  group_by(id_municipio_trabalho,ano) %>% 
+  fill(jobs_from_outside3112_lag, .direction = "downup")%>%
+   fill(solar_jobs_from_outside3112_lag, .direction = "downup")%>%
+   fill(wind_jobs_from_outside3112_lag, .direction = "downup")
+
+#Creating monthly cumulative series for all variables
+outside_annual<-outside_annual%>%group_by(id_municipio_trabalho,ano)%>%
+  mutate(jobs_outside_endmonth = jobs_from_outside3112_lag+cumsum(net_add_outside))%>%
+  mutate(solar_jobs_outside_endmonth = solar_jobs_from_outside3112_lag+cumsum(net_add_outside_solar))%>%
+  mutate(wind_jobs_outside_endmonth = wind_jobs_from_outside3112_lag+cumsum(net_add_outside_wind))
+
+#create discrepancy variable
+outside_annual<-outside_annual%>%mutate(discrepancy_recentered=jobs_outside_endmonth-jobs_from_outside3112)
+outside_annual$discrepancy_recentered[outside_annual$month!=12]<-NA
+
+#replace the cumulative December values with the actual reported figure on 31.12 (reduces discrepancy)
+outside_annual<-outside_annual%>%group_by(id_municipio_trabalho,ano)%>%
+  mutate(jobs_outside_endmonth=if_else(month==12,jobs_from_outside3112,jobs_outside_endmonth))%>%
+    mutate(solar_jobs_outside_endmonth=if_else(month==12,solar_jobs_from_outside3112,solar_jobs_outside_endmonth))%>%
+  mutate(wind_jobs_outside_endmonth=if_else(month==12,wind_jobs_from_outside3112,wind_jobs_outside_endmonth))
+
+
+ggplot(outside_annual %>% 
+             filter(discrepancy_recentered > -200 & discrepancy_recentered < 200, 
+                    ano %in% c(2007:2011, 2018:2022)), 
+            aes(discrepancy_recentered)) +
+  geom_histogram() +
+  facet_wrap(~ano)
+
+
+#replace all monthly values between 2012 and 2017 because of lack of coverage (need end of year 2017 value to then make 2018 series)
+outside_annual<-outside_annual%>%select(id_municipio_trabalho,ano,month,jobs_outside_endmonth, solar_jobs_outside_endmonth,wind_jobs_outside_endmonth)%>%filter(ano>2006)
+outside_annual$jobs_outside_endmonth[outside_annual$ano %in% c(2012:2017)]<-NA
+outside_annual$solar_jobs_outside_endmonth[outside_annual$ano %in% c(2012:2017)]<-NA
+outside_annual$wind_jobs_outside_endmonth[outside_annual$ano %in% c(2012:2017)]<-NA
+
+#merge to monthly panel data
+monthly_panel<-monthly_panel%>%left_join(outside_annual, by=c("id_municipio"="id_municipio_trabalho","ano", "month"))
+
+#create dummy spillover (to see how 1/0 control changes result)
+rm(list=setdiff(ls(), c("monthly_panel")))
+
+```
+
+
+9. Merging powerplant data/ treatment assignment to monthly panel data and dropping municipios with incomplete job data
+```{r}
+monthly_sector<-monthly_panel
+remove(monthly_panel)
+#drop variables that are no longer necessary
+monthly_sector<-monthly_sector%>%select(-ends_with(c("_total")))
+monthly_no_sector<-readRDS(here("intermediate","monthly_rais_nosectors_final_nocontrols.RDS"))
+
+#drop variables and times that are no longer necessary
+monthly_no_sector<-monthly_no_sector%>%filter(ano>2006)
+monthly_no_sector<-monthly_no_sector%>%select(-ends_with(c("_3112")))
+
+
+#merge sector and non-sectoral data 
+monthly_final<-left_join(monthly_no_sector, monthly_sector, by=c("id_municipio","ano","month"))
+monthly_final<-monthly_final%>%filter(!is.na(month))
+
+nas<-monthly_no_sector%>%filter(!is.na(month) & ano<2022 & is.na(total_endmonth))
+municipios_na<-nas%>%distinct(id_municipio)
+nas_2<-monthly_no_sector%>%filter(id_municipio %in% c(2101731, 2111672, 2206720), ano >2004, ano<2011)%>%
+  select(id_municipio, month, ano, total_endmonth)
+nas_drop<-monthly_final%>%filter(id_municipio %in% municipios_na$id_municipio)
+
+ # there are 10  municipios with missing job data prior to 2022. 8 of them are municipios that were founded after 2007 (4212650,4220000,1504752, 4314548,5006275,1504752,2206720) but there are two municipios with only sporadically missing data (2101731, 2111672). These municipios will be dropped
+`%notin%` <- Negate(`%in%`)
+
+monthly_final<-monthly_final%>%filter(id_municipio %notin% municipios_na$id_municipio)
+
+#add zeros to municipalities that do not have any sector-related jobs and are therefore not in sector-specific dataset
+columns_to_transform <- grep("solar|wind", names(monthly_final), value = TRUE)
+# Replace NA with zeros (exclude the year 2022 because here real NAs as data is not yet in)
+monthly_final[columns_to_transform][is.na(monthly_final[columns_to_transform]) & monthly_final$ano<2022] <- 0
+
+#load wage and occupational data
+wages_aggregated_long<-readRDS(here("intermediate","monthly_wages_deflated.RDS"))%>%select(ano,month, id_municipio,avg_wage_2020BRL)
+wind_wages<-readRDS(here("intermediate","wind_monthly_wages_deflated.RDS"))%>%select(ano,month, id_municipio,wind_wage_2020BRL)
+solar_wages<-readRDS(here("intermediate","solar_monthly_wages_deflated.RDS"))%>%select(ano,month, id_municipio,solar_wage_2020BRL)
+wind_cbo<-readRDS(here("intermediate","skill_level_wind_monthly.RDS"))
+solar_cbo<-readRDS(here("intermediate","skill_level_solar_monthly.RDS"))
+
+
+#adapt class for merge
+wages_aggregated_long <- type.convert(wages_aggregated_long, as.is = TRUE) 
+wind_wages <- type.convert(wind_wages, as.is = TRUE) 
+solar_wages <- type.convert(solar_wages, as.is = TRUE) 
+wind_cbo <- type.convert(wind_cbo, as.is = TRUE) 
+solar_cbo <- type.convert(solar_cbo, as.is = TRUE)
+
+monthly_final<-monthly_final%>%left_join(wages_aggregated_long, by=c("id_municipio","ano","month"))%>%
+  left_join(wind_wages, by=c("id_municipio","ano","month"))%>%
+    left_join(solar_wages, by=c("id_municipio","ano","month"))%>%
+  left_join(wind_cbo, by=c("id_municipio","ano","month"))%>%
+left_join(solar_cbo, by=c("id_municipio","ano","month"))
+
+
+monthly_final<-monthly_final%>%filter(!is.na(id_municipio))
+na_wages<-monthly_final%>%filter(ano<2022 & is.na(avg_wage_2020BRL))
+
+#There are some missing values for wages, because there were no workers in some months. Turn NaNs to NAs
+monthly_final$avg_wage_2020BRL[is.nan(monthly_final$avg_wage_2020BRL)]<-NA
+monthly_final$wind_wage_2020BRL[is.nan(monthly_final$wind_wage_2020BRL)]<-NA
+monthly_final$solar_wage_2020BRL[is.nan(monthly_final$solar_wage_2020BRL)]<-NA
+monthly_final$avg_skill_solar[is.nan(monthly_final$avg_skill_solar)]<-NA
+monthly_final$avg_skill_wind[is.nan(monthly_final$avg_skill_wind)]<-NA
+
+
+
+#merge power plant data
+plants_montly<-readRDS(here("intermediate","plants_municipality_month.RDS"))
+plants_montly$mun_id<-as.integer(plants_montly$mun_id)
+plants_montly$year_operation<-as.integer(plants_montly$year_operation)
+monthly_final<-monthly_final%>%left_join(plants_montly, by=c("month"="month_operation", "ano"="year_operation","id_municipio"="mun_id"))
+
+
+#only municipalities without any power plants remain as NA (rest was already expanded prior, no. of rows exactly the same)
+nas<-monthly_final%>%filter(is.na(mw_cum_total))
+nas2<-monthly_final%>%filter(is.na(no_plants_CGH))
+nas3<-monthly_final%>%filter(is.na(mw_cum_solar))
+remove(nas,nas2,nas3)
+#replace NAs by zeros (those are municipalities that never received any power plants at all)
+columns_to_transform <- grep("plants|mw|bndes", names(monthly_final), value = TRUE)
+monthly_final[columns_to_transform][is.na(monthly_final[columns_to_transform])] <- 0
+
+
+rm(list=setdiff(ls(), c("monthly_final")))
+```
+
+10. Add treatment variables and lags
+```{r}
+#create reverse cumulative sum function for leads
+revcumsum <- function(x){
+  x <- rev(cumsum(rev(x)))
+}
+#create a variable that indicates the month relative to the first introduction of solar and wind in the data period
+monthly_final<-monthly_final%>%arrange(id_municipio, ano, month)
+detach("package:dplyr", unload = TRUE)
+library(dplyr, warn.conflicts = FALSE)
+monthly_final <- monthly_final %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index <- which(.x$new_mw_solar > 5)[1]
+    if (is.na(switch_index)) {
+      .x %>% mutate(t_solar = NA_real_)
+    } else {
+      .x %>% mutate(t_solar = row_number() - switch_index)
+    }
+  })
+
+#repeat for wind
+monthly_final <- monthly_final %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index <- which(.x$new_mw_wind > 5)[1]
+    if (is.na(switch_index)) {
+      .x %>% mutate(t_wind = NA_real_)
+    } else {
+      .x %>% mutate(t_wind = row_number() - switch_index)
+    }
+  })
+
+#Re-adjust t_wind=0 for the 4 municipalities that have wind investments prior to 2008 to second treatment instance (to allow for enough pre-treatment)
+to_be_adjusted<-readRDS(here("final","annual_panel_final_noweights.RDS"))%>%filter(ano <2008, new_mw_wind>5)
+adjusted <- monthly_final %>%filter(id_municipio %in% to_be_adjusted$id_municipio)%>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index <- which(.x$new_mw_wind > 5)[2]
+    if (is.na(switch_index)) {
+      .x %>% mutate(t_wind = NA_real_)
+    } else {
+      .x %>% mutate(t_wind = row_number() - switch_index)
+    }
+  })
+
+adjusted<-adjusted%>%select(id_municipio, ano, month, t_wind)
+
+monthly_final <- monthly_final %>%
+  left_join(adjusted, by = c("id_municipio", "ano", "month")) %>%
+  mutate(t_wind = coalesce(t_wind.y, t_wind.x)) %>%
+  select(-t_wind.y, -t_wind.x)
+
+
+#add treatment assignment
+# create lead and lag variables
+#for pre-periods create leads
+for (i in 1:37) {
+  col_name <- paste0("d_solar_pre", i)
+  monthly_final <- monthly_final %>%
+    mutate(!!col_name := c(tail(new_mw_solar, -i), rep(0, i)))
+}
+
+#for post periods create lags
+for (i in 1:37) {
+  col_name <- paste0("d_solar_post", i)
+  monthly_final <- monthly_final %>%
+    mutate(!!col_name := c(rep(0, i), head(new_mw_solar, -i)))
+}
+
+#Wind:for pre-periods create leads
+for (i in 1:37) {
+  col_name <- paste0("d_wind_pre", i)
+  monthly_final <- monthly_final %>%
+    mutate(!!col_name := c(tail(new_mw_wind, -i), rep(0, i)))
+}
+
+#Wind:for post periods create lags
+for (i in 1:37) {
+  col_name <- paste0("d_wind_post", i)
+  monthly_final <- monthly_final %>%
+    mutate(!!col_name := c(rep(0, i), head(new_mw_wind, -i)))
+}
+
+library(stats)
+
+#create binned treatments lags and lead at the end of the observed event window
+monthly_final$d_solar_pre37_bin <- ave(monthly_final$d_solar_pre37,monthly_final$id_municipio, FUN = revcumsum)
+monthly_final$d_solar_post25_bin <- ave(monthly_final$d_solar_post25,monthly_final$id_municipio, FUN = cumsum)
+monthly_final$d_solar_post37_bin <- ave(monthly_final$d_solar_post37,monthly_final$id_municipio, FUN = cumsum)
+
+monthly_final$d_wind_pre37_bin <- ave(monthly_final$d_wind_pre37,monthly_final$id_municipio, FUN = revcumsum)
+monthly_final$d_wind_post25_bin <- ave(monthly_final$d_wind_post25,monthly_final$id_municipio, FUN = cumsum)
+monthly_final$d_wind_post37_bin <- ave(monthly_final$d_wind_post37,monthly_final$id_municipio, FUN = cumsum)
+
+check<-monthly_final%>%group_by(id_municipio)%>%filter(any(new_mw_solar>0))%>%select(id_municipio,ano,month,new_mw_solar,starts_with("d_solar_p"))
+saveRDS(monthly_final,here("intermediate","monthly_nospillover.RDS"))
+rm(list=ls())
+```
+
+Part 11.1 create spillover data for treated wind municipalities (control variable that states how much OTHER POWER PLANT CAPACITY (Except wind) larger 5 MW was installed within 50km radius, except for own capacity)
+```{r}
+#TWO STEPS HERE: FIRST: Create general spillover variable that tracks all power plant investment >5MW in the area
+#SECOND: Create other spillover variable tracks only WIND related investment >5MW in the area
+monthly_panel<-readRDS(here("intermediate","monthly_nospillover.RDS"))
+geodata<-readRDS(here("final","annual_panel_final_noweights.RDS"))%>%distinct(id_municipio,lon,lat,lcr_municipality,bndes_municipality)
+monthly_panel<-monthly_panel%>%left_join(geodata, by=c("id_municipio"))
+remove(geodata)
+library(sf)
+library(tidyverse)
+library(dplyr)
+library(units)
+`%notin%` <- Negate(`%in%`)
+
+#create a dataframe with longitude and latitude of locations that have wind park larger 5 MW
+mw_larger5_wind<-monthly_panel%>%group_by(id_municipio)%>%filter(any(new_mw_wind>5))%>%select(starts_with("new_mw"),ano, id_municipio,lon,lat)%>%distinct(id_municipio,lon,lat)
+
+#create a dataframe with longitude and latitude of all locations that have ANY Power plant OTHER THAN WIND larger 5MW in the data dataset
+mw_larger5_all<-monthly_panel%>%group_by(id_municipio)%>%filter(any(new_mw_solar>5)|any(new_mw_other>5))%>%select(starts_with("new_mw"),ano, id_municipio,lon,lat)%>%
+  distinct(id_municipio,lon,lat)
+
+
+# convert dataframes to sf objects
+mw_larger5_wind <- st_as_sf(mw_larger5_wind, coords = c("lon", "lat"), crs = 4326)
+mw_larger5_all <- st_as_sf(mw_larger5_all, coords = c("lon", "lat"), crs = 4326)
+
+# Transform to Cartesian CRS for appropriate distance calculation
+mw_larger5_wind <- st_transform(mw_larger5_wind, 3857)
+mw_larger5_all <- st_transform(mw_larger5_all, 3857)
+
+
+within_distance_list <- st_is_within_distance(mw_larger5_wind, mw_larger5_all, dist = set_units(50000, "meters"))
+
+
+#remove distance=0 (distance to itself)
+nearby_wind_list <- lapply(within_distance_list, function(x) {
+  nearby_wind_ids <- mw_larger5_all$id_municipio[unlist(x)]
+  if (length(nearby_wind_ids) == 0) NA else nearby_wind_ids
+})
+
+
+names(nearby_wind_list) <- mw_larger5_wind$id_municipio
+
+nearby_wind_df <- tibble(id_municipio = names(nearby_wind_list), nearby_wind = nearby_wind_list)
+
+max_len <- max(map_int(nearby_wind_df$nearby_wind, length), na.rm = TRUE)
+
+nearby_wind_df <- nearby_wind_df %>%
+  mutate(data = map(nearby_wind, ~ `length<-`(.x, max_len))) %>%
+  unnest_wider(data, names_sep = "_") %>%
+  rename_at(vars(starts_with("data_")), ~ str_replace(., "data_", "wind_"))
+
+wind_columns <- grep("^wind_", names(nearby_wind_df), value = TRUE)
+
+# Iterate over each wind column
+for (column in wind_columns) {
+  # Compare the wind column with "id_municipio" column
+  nearby_wind_df[[column]] <- ifelse(nearby_wind_df[[column]] == nearby_wind_df$id_municipio, NA, nearby_wind_df[[column]])
+}  
+nearby_wind_df$id_municipio<-as.integer(nearby_wind_df$id_municipio)
+joining_data<-monthly_panel%>%select(month, ano,id_municipio, new_mw_wind, new_mw_solar,new_mw_other)
+cols_to_sum<- grep("^new", names(joining_data), value = TRUE)
+joining_data$new_mw_all<-rowSums(joining_data[cols_to_sum],na.rm=TRUE)
+joining_data<-joining_data%>%select(month, ano, id_municipio, new_mw_all)
+joining_data2<-monthly_panel%>%select(month, ano, id_municipio)
+
+#join the date information
+wind_otherpower_50k<-nearby_wind_df%>%
+  left_join(joining_data2, by=c("id_municipio"), multiple="all")
+
+#join the MW information from the surrounding municipalities
+wind_otherpower_50k<-wind_otherpower_50k%>%
+  left_join(joining_data, by=c("wind_1"="id_municipio", "month","ano"), suffix=c("","_1"))%>%
+  left_join(joining_data, by=c("wind_2"="id_municipio", "month","ano"), suffix=c("","_2"))%>%
+  left_join(joining_data, by=c("wind_3"="id_municipio", "month","ano"), suffix=c("","_3"))%>%
+  left_join(joining_data, by=c("wind_4"="id_municipio", "month","ano"), suffix=c("","_4"))%>%
+  left_join(joining_data, by=c("wind_5"="id_municipio", "month","ano"), suffix=c("","_5"))
+
+wind_columns2 <- grep("^new_mw_all", names(wind_otherpower_50k), value = TRUE)
+wind_otherpower_50k$wind_otherpower_within50k <- rowSums(wind_otherpower_50k[wind_columns2], na.rm = TRUE)
+
+wind_otherpower_50k_final<-wind_otherpower_50k%>%select(id_municipio, month, ano, wind_otherpower_within50k)
+
+monthly_panel<-monthly_panel%>%left_join(wind_otherpower_50k_final, by=c("id_municipio", "month","ano"))
+
+#IMPORTANT replace unmatched combinations with zeros (no spillovers within 50k) and spillovers smaller 5 also with zero (to avoid overly sensitive controls)
+monthly_panel$wind_otherpower_within50k[is.na(monthly_panel$wind_otherpower_within50k)]<-0
+monthly_panel$wind_otherpower_within50k[monthly_panel$wind_otherpower_within50k<5]<-0
+
+#Create dummies for relative period of spillover effects
+monthly_panel<-monthly_panel%>%arrange(id_municipio, ano, month)
+detach("package:dplyr", unload = TRUE)
+library(dplyr, warn.conflicts = FALSE)
+monthly_panel <- monthly_panel %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index_spill_wind <- which(.x$wind_otherpower_within50k > 5)[1]
+    if (is.na(switch_index_spill_wind)) {
+      .x %>% mutate(t_otherpower_wind = NA_real_)
+    } else {
+      .x %>% mutate(t_otherpower_wind = row_number() - switch_index_spill_wind)
+    }
+  })
+
+# create lead and lag variables
+monthly_panel <- monthly_panel %>%group_by(id_municipio)%>% 
+  mutate(d_wind_otherpp_pre1 = dplyr::lead(wind_otherpower_within50k, n = 1, default = 0),
+         d_wind_otherpp_pre2 = dplyr::lead(wind_otherpower_within50k, n = 2, default = 0),
+         d_wind_otherpp_pre3 = dplyr::lead(wind_otherpower_within50k, n = 3, default = 0),
+         d_wind_otherpp_pre4 = dplyr::lead(wind_otherpower_within50k, n = 4, default = 0),
+         d_wind_otherpp_pre5 = dplyr::lead(wind_otherpower_within50k, n = 5, default = 0),
+         d_wind_otherpp_pre6 = dplyr::lead(wind_otherpower_within50k, n = 6, default = 0),
+         d_wind_otherpp_pre7 = dplyr::lead(wind_otherpower_within50k, n = 7, default = 0),
+         d_wind_otherpp_pre8 = dplyr::lead(wind_otherpower_within50k, n = 8, default = 0),
+         d_wind_otherpp_pre9 = dplyr::lead(wind_otherpower_within50k, n = 9, default = 0),
+         d_wind_otherpp_pre10 = dplyr::lead(wind_otherpower_within50k, n = 10, default = 0),
+         d_wind_otherpp_pre11 = dplyr::lead(wind_otherpower_within50k, n = 11, default = 0),
+         d_wind_otherpp_pre12 = dplyr::lead(wind_otherpower_within50k, n = 12, default = 0),
+         d_wind_otherpp_pre13 = dplyr::lead(wind_otherpower_within50k, n = 13, default = 0),
+         d_wind_otherpp_pre14 = dplyr::lead(wind_otherpower_within50k, n = 14, default = 0),
+         d_wind_otherpp_pre15 = dplyr::lead(wind_otherpower_within50k, n = 15, default = 0),
+         d_wind_otherpp_pre16 = dplyr::lead(wind_otherpower_within50k, n = 16, default = 0),
+         d_wind_otherpp_pre17 = dplyr::lead(wind_otherpower_within50k, n = 17, default = 0),
+         d_wind_otherpp_pre18 = dplyr::lead(wind_otherpower_within50k, n = 18, default = 0),
+         d_wind_otherpp_pre19 = dplyr::lead(wind_otherpower_within50k, n = 19, default = 0),
+         d_wind_otherpp_pre20 = dplyr::lead(wind_otherpower_within50k, n = 20, default = 0),
+         d_wind_otherpp_pre21 = dplyr::lead(wind_otherpower_within50k, n = 21, default = 0),
+         d_wind_otherpp_pre22 = dplyr::lead(wind_otherpower_within50k, n = 22, default = 0),
+         d_wind_otherpp_pre23 = dplyr::lead(wind_otherpower_within50k, n = 23, default = 0),
+         d_wind_otherpp_pre24 = dplyr::lead(wind_otherpower_within50k, n = 24, default = 0))
+
+monthly_panel <- monthly_panel %>%group_by(id_municipio)%>% 
+  mutate(d_wind_otherpp_post1 = dplyr::lag(wind_otherpower_within50k, n = 1, default = 0),
+         d_wind_otherpp_post2 = dplyr::lag(wind_otherpower_within50k, n = 2, default = 0),
+         d_wind_otherpp_post3 = dplyr::lag(wind_otherpower_within50k, n = 3, default = 0),
+         d_wind_otherpp_post4 = dplyr::lag(wind_otherpower_within50k, n = 4, default = 0),
+         d_wind_otherpp_post5 = dplyr::lag(wind_otherpower_within50k, n = 5, default = 0),
+         d_wind_otherpp_post6 = dplyr::lag(wind_otherpower_within50k, n = 6, default = 0),
+         d_wind_otherpp_post7 = dplyr::lag(wind_otherpower_within50k, n = 7, default = 0),
+         d_wind_otherpp_post8 = dplyr::lag(wind_otherpower_within50k, n = 8, default = 0),
+         d_wind_otherpp_post9 = dplyr::lag(wind_otherpower_within50k, n = 9, default = 0),
+         d_wind_otherpp_post10 = dplyr::lag(wind_otherpower_within50k, n = 10, default = 0),
+         d_wind_otherpp_post11 = dplyr::lag(wind_otherpower_within50k, n = 11, default = 0),
+         d_wind_otherpp_post12 = dplyr::lag(wind_otherpower_within50k, n = 12, default = 0),
+         d_wind_otherpp_post13 = dplyr::lag(wind_otherpower_within50k, n = 13, default = 0),
+         d_wind_otherpp_post14 = dplyr::lag(wind_otherpower_within50k, n = 14, default = 0),
+         d_wind_otherpp_post15 = dplyr::lag(wind_otherpower_within50k, n = 15, default = 0),
+         d_wind_otherpp_post16 = dplyr::lag(wind_otherpower_within50k, n = 16, default = 0),
+         d_wind_otherpp_post17 = dplyr::lag(wind_otherpower_within50k, n = 17, default = 0),
+         d_wind_otherpp_post18 = dplyr::lag(wind_otherpower_within50k, n = 18, default = 0),
+         d_wind_otherpp_post19 = dplyr::lag(wind_otherpower_within50k, n = 19, default = 0),
+         d_wind_otherpp_post20 = dplyr::lag(wind_otherpower_within50k, n = 20, default = 0),
+         d_wind_otherpp_post21 = dplyr::lag(wind_otherpower_within50k, n = 21, default = 0),
+         d_wind_otherpp_post22 = dplyr::lag(wind_otherpower_within50k, n = 22, default = 0),
+         d_wind_otherpp_post23 = dplyr::lag(wind_otherpower_within50k, n = 23, default = 0),
+         d_wind_otherpp_post24 = dplyr::lag(wind_otherpower_within50k, n = 24, default = 0))
+
+# Identify columns starting with "d_wind_spill_pre"
+wind_spill_cols <- grep("wind_otherpower|d_wind_otherpp", names(monthly_panel), value = TRUE)
+
+# Create new columns based on the condition
+monthly_panel <- monthly_panel %>%
+  mutate(across(all_of(wind_spill_cols), ~ ifelse(. > 0, 1, 0), .names = "dummy_{.col}"))
+
+#create dummy spillover (to see how 1/0 control changes result)
+rm(list=setdiff(ls(), c("monthly_panel", "mw_larger5_all","mw_larger5_wind")))
+```
+
+
+Part 11.2  spillover data for treated municipalities (control variable that states how much OTHER WIND CAPACITY larger 5 MW was installed within 50km radius, except for own capacity)
+```{r}
+within_distance_list <- st_is_within_distance(mw_larger5_wind, mw_larger5_wind, dist = set_units(50000, "meters"))
+
+#remove distance=0 (distance to itself)
+nearby_wind_list <- lapply(within_distance_list, function(x) {
+  nearby_wind_ids <- mw_larger5_all$id_municipio[unlist(x)]
+  if (length(nearby_wind_ids) == 0) NA else nearby_wind_ids
+})
+
+
+names(nearby_wind_list) <- mw_larger5_wind$id_municipio
+
+nearby_wind_df <- tibble(id_municipio = names(nearby_wind_list), nearby_wind = nearby_wind_list)
+
+max_len <- max(map_int(nearby_wind_df$nearby_wind, length), na.rm = TRUE)
+
+nearby_wind_df <- nearby_wind_df %>%
+  mutate(data = map(nearby_wind, ~ `length<-`(.x, max_len))) %>%
+  unnest_wider(data, names_sep = "_") %>%
+  rename_at(vars(starts_with("data_")), ~ str_replace(., "data_", "wind_"))
+
+wind_columns <- grep("^wind_", names(nearby_wind_df), value = TRUE)
+
+# Iterate over each wind column
+for (column in wind_columns) {
+  # Compare the wind column with "id_municipio" column
+  nearby_wind_df[[column]] <- ifelse(nearby_wind_df[[column]] == nearby_wind_df$id_municipio, NA, nearby_wind_df[[column]])
+}  
+nearby_wind_df$id_municipio<-as.integer(nearby_wind_df$id_municipio)
+joining_data<-monthly_panel%>%select(month, ano,id_municipio, new_mw_wind, new_mw_solar,new_mw_other)
+cols_to_sum<- grep("^new", names(joining_data), value = TRUE)
+joining_data$new_mw_all<-rowSums(joining_data[cols_to_sum],na.rm=TRUE)
+joining_data<-joining_data%>%select(month, ano, id_municipio, new_mw_all)
+joining_data2<-monthly_panel%>%select(month, ano, id_municipio)
+
+#join the date information
+wind_otherwind_50k<-nearby_wind_df%>%
+  left_join(joining_data2, by=c("id_municipio"), multiple="all")
+
+#join the MW information from the surrounding municipalities
+wind_otherwind_50k<-wind_otherwind_50k%>%
+  left_join(joining_data, by=c("wind_1"="id_municipio", "month","ano"), suffix=c("","_1"))%>%
+  left_join(joining_data, by=c("wind_2"="id_municipio", "month","ano"), suffix=c("","_2"))%>%
+  left_join(joining_data, by=c("wind_3"="id_municipio", "month","ano"), suffix=c("","_3"))%>%
+  left_join(joining_data, by=c("wind_4"="id_municipio", "month","ano"), suffix=c("","_4"))%>%
+  left_join(joining_data, by=c("wind_5"="id_municipio", "month","ano"), suffix=c("","_5"))%>%
+  left_join(joining_data, by=c("wind_6"="id_municipio", "month","ano"), suffix=c("","_6"))%>%
+  left_join(joining_data, by=c("wind_7"="id_municipio", "month","ano"), suffix=c("","_7"))%>%
+  left_join(joining_data, by=c("wind_8"="id_municipio", "month","ano"), suffix=c("","_8"))%>%
+  left_join(joining_data, by=c("wind_9"="id_municipio", "month","ano"), suffix=c("","_9"))%>%
+  left_join(joining_data, by=c("wind_10"="id_municipio", "month","ano"), suffix=c("","_10"))%>%
+  left_join(joining_data, by=c("wind_11"="id_municipio", "month","ano"), suffix=c("","_11"))%>%
+  left_join(joining_data, by=c("wind_12"="id_municipio", "month","ano"), suffix=c("","_12"))
+
+wind_columns2 <- grep("^new_mw_all", names(wind_otherwind_50k), value = TRUE)
+wind_otherwind_50k$wind_otherwind_within50k <- rowSums(wind_otherwind_50k[wind_columns2], na.rm = TRUE)
+
+wind_otherwind_50k_final<-wind_otherwind_50k%>%select(id_municipio, month, ano, wind_otherwind_within50k)
+
+monthly_panel<-monthly_panel%>%left_join(wind_otherwind_50k_final, by=c("id_municipio", "month","ano"))
+
+#IMPORTANT replace unmatched combinations with zeros (no spillovers within 50k) and spillovers smaller 5 also with zero (to avoid overly sensitive controls)
+monthly_panel$wind_otherwind_within50k[is.na(monthly_panel$wind_otherwind_within50k)]<-0
+monthly_panel$wind_otherwind_within50k[monthly_panel$wind_otherwind_within50k<5]<-0
+
+#Create dummies for relative period of spillover effects
+monthly_panel<-monthly_panel%>%arrange(id_municipio, ano, month)
+detach("package:dplyr", unload = TRUE)
+library(dplyr, warn.conflicts = FALSE)
+monthly_panel <- monthly_panel %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index_spill_wind <- which(.x$wind_otherwind_within50k > 5)[1]
+    if (is.na(switch_index_spill_wind)) {
+      .x %>% mutate(t_otherwind = NA_real_)
+    } else {
+      .x %>% mutate(t_otherwind = row_number() - switch_index_spill_wind)
+    }
+  })
+
+# create lead and lag variables
+monthly_panel <- monthly_panel %>%group_by(id_municipio)%>% 
+  mutate(d_wind_otherwind_pre1 = dplyr::lead(wind_otherwind_within50k, n = 1, default = 0),
+         d_wind_otherwind_pre2 = dplyr::lead(wind_otherwind_within50k, n = 2, default = 0),
+         d_wind_otherwind_pre3 = dplyr::lead(wind_otherwind_within50k, n = 3, default = 0),
+         d_wind_otherwind_pre4 = dplyr::lead(wind_otherwind_within50k, n = 4, default = 0),
+         d_wind_otherwind_pre5 = dplyr::lead(wind_otherwind_within50k, n = 5, default = 0),
+         d_wind_otherwind_pre6 = dplyr::lead(wind_otherwind_within50k, n = 6, default = 0),
+         d_wind_otherwind_pre7 = dplyr::lead(wind_otherwind_within50k, n = 7, default = 0),
+         d_wind_otherwind_pre8 = dplyr::lead(wind_otherwind_within50k, n = 8, default = 0),
+         d_wind_otherwind_pre9 = dplyr::lead(wind_otherwind_within50k, n = 9, default = 0),
+         d_wind_otherwind_pre10 = dplyr::lead(wind_otherwind_within50k, n = 10, default = 0),
+         d_wind_otherwind_pre11 = dplyr::lead(wind_otherwind_within50k, n = 11, default = 0),
+         d_wind_otherwind_pre12 = dplyr::lead(wind_otherwind_within50k, n = 12, default = 0),
+         d_wind_otherwind_pre13 = dplyr::lead(wind_otherwind_within50k, n = 13, default = 0),
+         d_wind_otherwind_pre14 = dplyr::lead(wind_otherwind_within50k, n = 14, default = 0),
+         d_wind_otherwind_pre15 = dplyr::lead(wind_otherwind_within50k, n = 15, default = 0),
+         d_wind_otherwind_pre16 = dplyr::lead(wind_otherwind_within50k, n = 16, default = 0),
+         d_wind_otherwind_pre17 = dplyr::lead(wind_otherwind_within50k, n = 17, default = 0),
+         d_wind_otherwind_pre18 = dplyr::lead(wind_otherwind_within50k, n = 18, default = 0),
+         d_wind_otherwind_pre19 = dplyr::lead(wind_otherwind_within50k, n = 19, default = 0),
+         d_wind_otherwind_pre20 = dplyr::lead(wind_otherwind_within50k, n = 20, default = 0),
+         d_wind_otherwind_pre21 = dplyr::lead(wind_otherwind_within50k, n = 21, default = 0),
+         d_wind_otherwind_pre22 = dplyr::lead(wind_otherwind_within50k, n = 22, default = 0),
+         d_wind_otherwind_pre23 = dplyr::lead(wind_otherwind_within50k, n = 23, default = 0),
+         d_wind_otherwind_pre24 = dplyr::lead(wind_otherwind_within50k, n = 24, default = 0))
+
+monthly_panel <- monthly_panel %>%group_by(id_municipio)%>% 
+  mutate(d_wind_otherwind_post1 = dplyr::lag(wind_otherwind_within50k, n = 1, default = 0),
+         d_wind_otherwind_post2 = dplyr::lag(wind_otherwind_within50k, n = 2, default = 0),
+         d_wind_otherwind_post3 = dplyr::lag(wind_otherwind_within50k, n = 3, default = 0),
+         d_wind_otherwind_post4 = dplyr::lag(wind_otherwind_within50k, n = 4, default = 0),
+         d_wind_otherwind_post5 = dplyr::lag(wind_otherwind_within50k, n = 5, default = 0),
+         d_wind_otherwind_post6 = dplyr::lag(wind_otherwind_within50k, n = 6, default = 0),
+         d_wind_otherwind_post7 = dplyr::lag(wind_otherwind_within50k, n = 7, default = 0),
+         d_wind_otherwind_post8 = dplyr::lag(wind_otherwind_within50k, n = 8, default = 0),
+         d_wind_otherwind_post9 = dplyr::lag(wind_otherwind_within50k, n = 9, default = 0),
+         d_wind_otherwind_post10 = dplyr::lag(wind_otherwind_within50k, n = 10, default = 0),
+         d_wind_otherwind_post11 = dplyr::lag(wind_otherwind_within50k, n = 11, default = 0),
+         d_wind_otherwind_post12 = dplyr::lag(wind_otherwind_within50k, n = 12, default = 0),
+         d_wind_otherwind_post13 = dplyr::lag(wind_otherwind_within50k, n = 13, default = 0),
+         d_wind_otherwind_post14 = dplyr::lag(wind_otherwind_within50k, n = 14, default = 0),
+         d_wind_otherwind_post15 = dplyr::lag(wind_otherwind_within50k, n = 15, default = 0),
+         d_wind_otherwind_post16 = dplyr::lag(wind_otherwind_within50k, n = 16, default = 0),
+         d_wind_otherwind_post17 = dplyr::lag(wind_otherwind_within50k, n = 17, default = 0),
+         d_wind_otherwind_post18 = dplyr::lag(wind_otherwind_within50k, n = 18, default = 0),
+         d_wind_otherwind_post19 = dplyr::lag(wind_otherwind_within50k, n = 19, default = 0),
+         d_wind_otherwind_post20 = dplyr::lag(wind_otherwind_within50k, n = 20, default = 0),
+         d_wind_otherwind_post21 = dplyr::lag(wind_otherwind_within50k, n = 21, default = 0),
+         d_wind_otherwind_post22 = dplyr::lag(wind_otherwind_within50k, n = 22, default = 0),
+         d_wind_otherwind_post23 = dplyr::lag(wind_otherwind_within50k, n = 23, default = 0),
+         d_wind_otherwind_post24 = dplyr::lag(wind_otherwind_within50k, n = 24, default = 0))
+
+# Identify columns starting with "d_wind_spill_pre"
+wind_spill_cols <- grep("wind_otherwind|d_wind_otherwind", names(monthly_panel), value = TRUE)
+
+# Create new columns based on the condition
+monthly_panel <- monthly_panel %>%
+  mutate(across(all_of(wind_spill_cols), ~ ifelse(. > 0, 1, 0), .names = "dummy_{.col}"))
+
+#create dummy spillover (to see how 1/0 control changes result)
+rm(list=setdiff(ls(), c("monthly_panel", "mw_larger5_all")))
+```
+
+
+
+Part 11.3 create spillover data for treated solar municipalities (control variable that states how much OTHER POWER PLANT CAPACITY (Except solar) larger 5 MW was installed within 50km radius, except for own capacity)
+```{r}
+#create a dataframe with longitude and latitude of locations that have solar park larger 5 MW
+mw_larger5_solar<-monthly_panel%>%group_by(id_municipio)%>%filter(any(new_mw_solar>5))%>%select(starts_with("new_mw"),ano, id_municipio,lon,lat)%>%distinct(id_municipio,lon,lat)
+
+# convert dataframes to sf objects
+mw_larger5_solar <- st_as_sf(mw_larger5_solar, coords = c("lon", "lat"), crs = 4326)
+
+# Transform to Cartesian CRS for appropriate distance calculation
+mw_larger5_solar <- st_transform(mw_larger5_solar, 3857)
+
+within_distance_list <- st_is_within_distance(mw_larger5_solar, mw_larger5_all, dist = set_units(50000, "meters"))
+
+#remove distance=0 (distance to itself)
+nearby_solar_list <- lapply(within_distance_list, function(x) {
+  nearby_solar_ids <- mw_larger5_all$id_municipio[unlist(x)]
+  if (length(nearby_solar_ids) == 0) NA else nearby_solar_ids
+})
+
+
+names(nearby_solar_list) <- mw_larger5_solar$id_municipio
+
+nearby_solar_df <- tibble(id_municipio = names(nearby_solar_list), nearby_solar = nearby_solar_list)
+
+max_len <- max(map_int(nearby_solar_df$nearby_solar, length), na.rm = TRUE)
+
+nearby_solar_df <- nearby_solar_df %>%
+  mutate(data = map(nearby_solar, ~ `length<-`(.x, max_len))) %>%
+  unnest_wider(data, names_sep = "_") %>%
+  rename_at(vars(starts_with("data_")), ~ str_replace(., "data_", "solar_"))
+
+solar_columns <- grep("^solar_", names(nearby_solar_df), value = TRUE)
+
+# Iterate over each solar column
+for (column in solar_columns) {
+  # Compare the solar column with "id_municipio" column
+  nearby_solar_df[[column]] <- ifelse(nearby_solar_df[[column]] == nearby_solar_df$id_municipio, NA, nearby_solar_df[[column]])
+}  
+nearby_solar_df$id_municipio<-as.integer(nearby_solar_df$id_municipio)
+joining_data<-monthly_panel%>%select(month, ano,id_municipio, new_mw_solar, new_mw_solar,new_mw_other)
+cols_to_sum<- grep("^new", names(joining_data), value = TRUE)
+joining_data$new_mw_all<-rowSums(joining_data[cols_to_sum],na.rm=TRUE)
+joining_data<-joining_data%>%select(month, ano, id_municipio, new_mw_all)
+joining_data2<-monthly_panel%>%select(month, ano, id_municipio)
+
+#join the date information
+solar_otherpower_50k<-nearby_solar_df%>%
+  left_join(joining_data2, by=c("id_municipio"), multiple="all")
+
+#join the MW information from the surrounding municipalities
+solar_otherpower_50k<-solar_otherpower_50k%>%
+  left_join(joining_data, by=c("solar_1"="id_municipio", "month","ano"), suffix=c("","_1"))%>%
+  left_join(joining_data, by=c("solar_2"="id_municipio", "month","ano"), suffix=c("","_2"))%>%
+  left_join(joining_data, by=c("solar_3"="id_municipio", "month","ano"), suffix=c("","_3"))%>%
+  left_join(joining_data, by=c("solar_4"="id_municipio", "month","ano"), suffix=c("","_4"))%>%
+  left_join(joining_data, by=c("solar_5"="id_municipio", "month","ano"), suffix=c("","_5"))
+
+solar_columns2 <- grep("^new_mw_all", names(solar_otherpower_50k), value = TRUE)
+solar_otherpower_50k$solar_otherpower_within50k <- rowSums(solar_otherpower_50k[solar_columns2], na.rm = TRUE)
+
+solar_otherpower_50k_final<-solar_otherpower_50k%>%select(id_municipio, month, ano, solar_otherpower_within50k)
+
+monthly_panel<-monthly_panel%>%left_join(solar_otherpower_50k_final, by=c("id_municipio", "month","ano"))
+
+#IMPORTANT replace unmatched combinations with zeros (no spillovers within 50k) and spillovers smaller 5 also with zero (to avoid overly sensitive controls)
+monthly_panel$solar_otherpower_within50k[is.na(monthly_panel$solar_otherpower_within50k)]<-0
+monthly_panel$solar_otherpower_within50k[monthly_panel$solar_otherpower_within50k<5]<-0
+
+#Create dummies for relative period of spillover effects
+monthly_panel<-monthly_panel%>%arrange(id_municipio, ano, month)
+detach("package:dplyr", unload = TRUE)
+library(dplyr, warn.conflicts = FALSE)
+monthly_panel <- monthly_panel %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index_spill_solar <- which(.x$solar_otherpower_within50k > 5)[1]
+    if (is.na(switch_index_spill_solar)) {
+      .x %>% mutate(t_otherpower_solar = NA_real_)
+    } else {
+      .x %>% mutate(t_otherpower_solar = row_number() - switch_index_spill_solar)
+    }
+  })
+
+# create lead and lag variables
+monthly_panel <- monthly_panel %>%group_by(id_municipio)%>% 
+  mutate(d_solar_otherpp_pre1 = dplyr::lead(solar_otherpower_within50k, n = 1, default = 0),
+         d_solar_otherpp_pre2 = dplyr::lead(solar_otherpower_within50k, n = 2, default = 0),
+         d_solar_otherpp_pre3 = dplyr::lead(solar_otherpower_within50k, n = 3, default = 0),
+         d_solar_otherpp_pre4 = dplyr::lead(solar_otherpower_within50k, n = 4, default = 0),
+         d_solar_otherpp_pre5 = dplyr::lead(solar_otherpower_within50k, n = 5, default = 0),
+         d_solar_otherpp_pre6 = dplyr::lead(solar_otherpower_within50k, n = 6, default = 0),
+         d_solar_otherpp_pre7 = dplyr::lead(solar_otherpower_within50k, n = 7, default = 0),
+         d_solar_otherpp_pre8 = dplyr::lead(solar_otherpower_within50k, n = 8, default = 0),
+         d_solar_otherpp_pre9 = dplyr::lead(solar_otherpower_within50k, n = 9, default = 0),
+         d_solar_otherpp_pre10 = dplyr::lead(solar_otherpower_within50k, n = 10, default = 0),
+         d_solar_otherpp_pre11 = dplyr::lead(solar_otherpower_within50k, n = 11, default = 0),
+         d_solar_otherpp_pre12 = dplyr::lead(solar_otherpower_within50k, n = 12, default = 0),
+         d_solar_otherpp_pre13 = dplyr::lead(solar_otherpower_within50k, n = 13, default = 0),
+         d_solar_otherpp_pre14 = dplyr::lead(solar_otherpower_within50k, n = 14, default = 0),
+         d_solar_otherpp_pre15 = dplyr::lead(solar_otherpower_within50k, n = 15, default = 0),
+         d_solar_otherpp_pre16 = dplyr::lead(solar_otherpower_within50k, n = 16, default = 0),
+         d_solar_otherpp_pre17 = dplyr::lead(solar_otherpower_within50k, n = 17, default = 0),
+         d_solar_otherpp_pre18 = dplyr::lead(solar_otherpower_within50k, n = 18, default = 0),
+         d_solar_otherpp_pre19 = dplyr::lead(solar_otherpower_within50k, n = 19, default = 0),
+         d_solar_otherpp_pre20 = dplyr::lead(solar_otherpower_within50k, n = 20, default = 0),
+         d_solar_otherpp_pre21 = dplyr::lead(solar_otherpower_within50k, n = 21, default = 0),
+         d_solar_otherpp_pre22 = dplyr::lead(solar_otherpower_within50k, n = 22, default = 0),
+         d_solar_otherpp_pre23 = dplyr::lead(solar_otherpower_within50k, n = 23, default = 0),
+         d_solar_otherpp_pre24 = dplyr::lead(solar_otherpower_within50k, n = 24, default = 0))
+
+monthly_panel <- monthly_panel %>%group_by(id_municipio)%>% 
+  mutate(d_solar_otherpp_post1 = dplyr::lag(solar_otherpower_within50k, n = 1, default = 0),
+         d_solar_otherpp_post2 = dplyr::lag(solar_otherpower_within50k, n = 2, default = 0),
+         d_solar_otherpp_post3 = dplyr::lag(solar_otherpower_within50k, n = 3, default = 0),
+         d_solar_otherpp_post4 = dplyr::lag(solar_otherpower_within50k, n = 4, default = 0),
+         d_solar_otherpp_post5 = dplyr::lag(solar_otherpower_within50k, n = 5, default = 0),
+         d_solar_otherpp_post6 = dplyr::lag(solar_otherpower_within50k, n = 6, default = 0),
+         d_solar_otherpp_post7 = dplyr::lag(solar_otherpower_within50k, n = 7, default = 0),
+         d_solar_otherpp_post8 = dplyr::lag(solar_otherpower_within50k, n = 8, default = 0),
+         d_solar_otherpp_post9 = dplyr::lag(solar_otherpower_within50k, n = 9, default = 0),
+         d_solar_otherpp_post10 = dplyr::lag(solar_otherpower_within50k, n = 10, default = 0),
+         d_solar_otherpp_post11 = dplyr::lag(solar_otherpower_within50k, n = 11, default = 0),
+         d_solar_otherpp_post12 = dplyr::lag(solar_otherpower_within50k, n = 12, default = 0),
+         d_solar_otherpp_post13 = dplyr::lag(solar_otherpower_within50k, n = 13, default = 0),
+         d_solar_otherpp_post14 = dplyr::lag(solar_otherpower_within50k, n = 14, default = 0),
+         d_solar_otherpp_post15 = dplyr::lag(solar_otherpower_within50k, n = 15, default = 0),
+         d_solar_otherpp_post16 = dplyr::lag(solar_otherpower_within50k, n = 16, default = 0),
+         d_solar_otherpp_post17 = dplyr::lag(solar_otherpower_within50k, n = 17, default = 0),
+         d_solar_otherpp_post18 = dplyr::lag(solar_otherpower_within50k, n = 18, default = 0),
+         d_solar_otherpp_post19 = dplyr::lag(solar_otherpower_within50k, n = 19, default = 0),
+         d_solar_otherpp_post20 = dplyr::lag(solar_otherpower_within50k, n = 20, default = 0),
+         d_solar_otherpp_post21 = dplyr::lag(solar_otherpower_within50k, n = 21, default = 0),
+         d_solar_otherpp_post22 = dplyr::lag(solar_otherpower_within50k, n = 22, default = 0),
+         d_solar_otherpp_post23 = dplyr::lag(solar_otherpower_within50k, n = 23, default = 0),
+         d_solar_otherpp_post24 = dplyr::lag(solar_otherpower_within50k, n = 24, default = 0))
+
+# Identify columns starting with "d_solar_spill_pre"
+solar_spill_cols <- grep("solar_otherpower|d_solar_otherpp", names(monthly_panel), value = TRUE)
+
+# Create new columns based on the condition
+monthly_panel <- monthly_panel %>%
+  mutate(across(all_of(solar_spill_cols), ~ ifelse(. > 0, 1, 0), .names = "dummy_{.col}"))
+
+#create dummy spillover (to see how 1/0 control changes result)
+rm(list=setdiff(ls(), c("monthly_panel", "mw_larger5_all","mw_larger5_solar")))
+```
+
+
+Part 11.4  spillover data for treated municipalities (control variable that states how much OTHER solar CAPACITY larger 5 MW was installed within 50km radius, except for own capacity)
+```{r}
+within_distance_list <- st_is_within_distance(mw_larger5_solar, mw_larger5_solar, dist = set_units(50000, "meters"))
+
+#remove distance=0 (distance to itself)
+nearby_solar_list <- lapply(within_distance_list, function(x) {
+  nearby_solar_ids <- mw_larger5_all$id_municipio[unlist(x)]
+  if (length(nearby_solar_ids) == 0) NA else nearby_solar_ids
+})
+
+
+names(nearby_solar_list) <- mw_larger5_solar$id_municipio
+
+nearby_solar_df <- tibble(id_municipio = names(nearby_solar_list), nearby_solar = nearby_solar_list)
+
+max_len <- max(map_int(nearby_solar_df$nearby_solar, length), na.rm = TRUE)
+
+nearby_solar_df <- nearby_solar_df %>%
+  mutate(data = map(nearby_solar, ~ `length<-`(.x, max_len))) %>%
+  unnest_wider(data, names_sep = "_") %>%
+  rename_at(vars(starts_with("data_")), ~ str_replace(., "data_", "solar_"))
+
+solar_columns <- grep("^solar_", names(nearby_solar_df), value = TRUE)
+
+# Iterate over each solar column
+for (column in solar_columns) {
+  # Compare the solar column with "id_municipio" column
+  nearby_solar_df[[column]] <- ifelse(nearby_solar_df[[column]] == nearby_solar_df$id_municipio, NA, nearby_solar_df[[column]])
+}  
+nearby_solar_df$id_municipio<-as.integer(nearby_solar_df$id_municipio)
+joining_data<-monthly_panel%>%select(month, ano,id_municipio, new_mw_solar, new_mw_solar,new_mw_other)
+cols_to_sum<- grep("^new", names(joining_data), value = TRUE)
+joining_data$new_mw_all<-rowSums(joining_data[cols_to_sum],na.rm=TRUE)
+joining_data<-joining_data%>%select(month, ano, id_municipio, new_mw_all)
+joining_data2<-monthly_panel%>%select(month, ano, id_municipio)
+
+#join the date information
+solar_othersolar_50k<-nearby_solar_df%>%
+  left_join(joining_data2, by=c("id_municipio"), multiple="all")
+
+#join the MW information from the surrounding municipalities
+solar_othersolar_50k<-solar_othersolar_50k%>%
+  left_join(joining_data, by=c("solar_1"="id_municipio", "month","ano"), suffix=c("","_1"))%>%
+  left_join(joining_data, by=c("solar_2"="id_municipio", "month","ano"), suffix=c("","_2"))%>%
+  left_join(joining_data, by=c("solar_3"="id_municipio", "month","ano"), suffix=c("","_3"))%>%
+  left_join(joining_data, by=c("solar_4"="id_municipio", "month","ano"), suffix=c("","_4"))
+
+solar_columns2 <- grep("^new_mw_all", names(solar_othersolar_50k), value = TRUE)
+solar_othersolar_50k$solar_othersolar_within50k <- rowSums(solar_othersolar_50k[solar_columns2], na.rm = TRUE)
+
+solar_othersolar_50k_final<-solar_othersolar_50k%>%select(id_municipio, month, ano, solar_othersolar_within50k)
+
+monthly_panel<-monthly_panel%>%left_join(solar_othersolar_50k_final, by=c("id_municipio", "month","ano"))
+
+#IMPORTANT replace unmatched combinations with zeros (no spillovers within 50k) and spillovers smaller 5 also with zero (to avoid overly sensitive controls)
+monthly_panel$solar_othersolar_within50k[is.na(monthly_panel$solar_othersolar_within50k)]<-0
+monthly_panel$solar_othersolar_within50k[monthly_panel$solar_othersolar_within50k<5]<-0
+
+#Create dummies for relative period of spillover effects
+monthly_panel<-monthly_panel%>%arrange(id_municipio, ano, month)
+detach("package:dplyr", unload = TRUE)
+library(dplyr, warn.conflicts = FALSE)
+monthly_panel <- monthly_panel %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index_spill_solar <- which(.x$solar_othersolar_within50k > 5)[1]
+    if (is.na(switch_index_spill_solar)) {
+      .x %>% mutate(t_othersolar = NA_real_)
+    } else {
+      .x %>% mutate(t_othersolar = row_number() - switch_index_spill_solar)
+    }
+  })
+
+# create lead and lag variables
+monthly_panel <- monthly_panel %>%group_by(id_municipio)%>% 
+  mutate(d_solar_othersolar_pre1 = dplyr::lead(solar_othersolar_within50k, n = 1, default = 0),
+         d_solar_othersolar_pre2 = dplyr::lead(solar_othersolar_within50k, n = 2, default = 0),
+         d_solar_othersolar_pre3 = dplyr::lead(solar_othersolar_within50k, n = 3, default = 0),
+         d_solar_othersolar_pre4 = dplyr::lead(solar_othersolar_within50k, n = 4, default = 0),
+         d_solar_othersolar_pre5 = dplyr::lead(solar_othersolar_within50k, n = 5, default = 0),
+         d_solar_othersolar_pre6 = dplyr::lead(solar_othersolar_within50k, n = 6, default = 0),
+         d_solar_othersolar_pre7 = dplyr::lead(solar_othersolar_within50k, n = 7, default = 0),
+         d_solar_othersolar_pre8 = dplyr::lead(solar_othersolar_within50k, n = 8, default = 0),
+         d_solar_othersolar_pre9 = dplyr::lead(solar_othersolar_within50k, n = 9, default = 0),
+         d_solar_othersolar_pre10 = dplyr::lead(solar_othersolar_within50k, n = 10, default = 0),
+         d_solar_othersolar_pre11 = dplyr::lead(solar_othersolar_within50k, n = 11, default = 0),
+         d_solar_othersolar_pre12 = dplyr::lead(solar_othersolar_within50k, n = 12, default = 0),
+         d_solar_othersolar_pre13 = dplyr::lead(solar_othersolar_within50k, n = 13, default = 0),
+         d_solar_othersolar_pre14 = dplyr::lead(solar_othersolar_within50k, n = 14, default = 0),
+         d_solar_othersolar_pre15 = dplyr::lead(solar_othersolar_within50k, n = 15, default = 0),
+         d_solar_othersolar_pre16 = dplyr::lead(solar_othersolar_within50k, n = 16, default = 0),
+         d_solar_othersolar_pre17 = dplyr::lead(solar_othersolar_within50k, n = 17, default = 0),
+         d_solar_othersolar_pre18 = dplyr::lead(solar_othersolar_within50k, n = 18, default = 0),
+         d_solar_othersolar_pre19 = dplyr::lead(solar_othersolar_within50k, n = 19, default = 0),
+         d_solar_othersolar_pre20 = dplyr::lead(solar_othersolar_within50k, n = 20, default = 0),
+         d_solar_othersolar_pre21 = dplyr::lead(solar_othersolar_within50k, n = 21, default = 0),
+         d_solar_othersolar_pre22 = dplyr::lead(solar_othersolar_within50k, n = 22, default = 0),
+         d_solar_othersolar_pre23 = dplyr::lead(solar_othersolar_within50k, n = 23, default = 0),
+         d_solar_othersolar_pre24 = dplyr::lead(solar_othersolar_within50k, n = 24, default = 0))
+
+monthly_panel <- monthly_panel %>%group_by(id_municipio)%>% 
+  mutate(d_solar_othersolar_post1 = dplyr::lag(solar_othersolar_within50k, n = 1, default = 0),
+         d_solar_othersolar_post2 = dplyr::lag(solar_othersolar_within50k, n = 2, default = 0),
+         d_solar_othersolar_post3 = dplyr::lag(solar_othersolar_within50k, n = 3, default = 0),
+         d_solar_othersolar_post4 = dplyr::lag(solar_othersolar_within50k, n = 4, default = 0),
+         d_solar_othersolar_post5 = dplyr::lag(solar_othersolar_within50k, n = 5, default = 0),
+         d_solar_othersolar_post6 = dplyr::lag(solar_othersolar_within50k, n = 6, default = 0),
+         d_solar_othersolar_post7 = dplyr::lag(solar_othersolar_within50k, n = 7, default = 0),
+         d_solar_othersolar_post8 = dplyr::lag(solar_othersolar_within50k, n = 8, default = 0),
+         d_solar_othersolar_post9 = dplyr::lag(solar_othersolar_within50k, n = 9, default = 0),
+         d_solar_othersolar_post10 = dplyr::lag(solar_othersolar_within50k, n = 10, default = 0),
+         d_solar_othersolar_post11 = dplyr::lag(solar_othersolar_within50k, n = 11, default = 0),
+         d_solar_othersolar_post12 = dplyr::lag(solar_othersolar_within50k, n = 12, default = 0),
+         d_solar_othersolar_post13 = dplyr::lag(solar_othersolar_within50k, n = 13, default = 0),
+         d_solar_othersolar_post14 = dplyr::lag(solar_othersolar_within50k, n = 14, default = 0),
+         d_solar_othersolar_post15 = dplyr::lag(solar_othersolar_within50k, n = 15, default = 0),
+         d_solar_othersolar_post16 = dplyr::lag(solar_othersolar_within50k, n = 16, default = 0),
+         d_solar_othersolar_post17 = dplyr::lag(solar_othersolar_within50k, n = 17, default = 0),
+         d_solar_othersolar_post18 = dplyr::lag(solar_othersolar_within50k, n = 18, default = 0),
+         d_solar_othersolar_post19 = dplyr::lag(solar_othersolar_within50k, n = 19, default = 0),
+         d_solar_othersolar_post20 = dplyr::lag(solar_othersolar_within50k, n = 20, default = 0),
+         d_solar_othersolar_post21 = dplyr::lag(solar_othersolar_within50k, n = 21, default = 0),
+         d_solar_othersolar_post22 = dplyr::lag(solar_othersolar_within50k, n = 22, default = 0),
+         d_solar_othersolar_post23 = dplyr::lag(solar_othersolar_within50k, n = 23, default = 0),
+         d_solar_othersolar_post24 = dplyr::lag(solar_othersolar_within50k, n = 24, default = 0))
+
+# Identify columns starting with "d_solar_spill_pre"
+solar_spill_cols <- grep("solar_othersolar|d_solar_othersolar", names(monthly_panel), value = TRUE)
+
+# Create new columns based on the condition
+monthly_panel <- monthly_panel %>%
+  mutate(across(all_of(solar_spill_cols), ~ ifelse(. > 0, 1, 0), .names = "dummy_{.col}"))
+
+#create dummy spillover (to see how 1/0 control changes result)
+rm(list=setdiff(ls(), c("monthly_panel")))
+
+```
+
+
+
+Final time-related variable creation 
+```{r}
+#create a month-year variable which will serve as time id
+monthly_panel$month_year <- sprintf("%d-%d", monthly_panel$month, monthly_panel$ano)
+desired_order <- c("id_municipio", "month_year", "month", "ano")
+monthly_panel <- monthly_panel %>% dplyr::select(all_of(desired_order), everything())
+
+#Create a variable that indicates the first period of solar plant entering operation (t0)
+monthly_panel <- monthly_panel %>%
+  group_by(id_municipio) %>%
+  mutate(treat_at_start_solar2 = if_else(month_year=="1-2007", new_mw_solar, NA)) %>%
+  mutate(period_first_treat_solar2 = if_else(t_solar == 0, month_year, NA)) %>%
+  mutate(avg_treat_solar2=sum(new_mw_solar)/192)%>%
+  fill(treat_at_start_solar2, .direction="downup")%>%
+  fill(period_first_treat_solar2,.direction="downup")%>%
+  mutate(increase_solar2=if_else(avg_treat_solar2>treat_at_start_solar2,1,0))
+
+#for control cohort first_treat==0 
+monthly_panel$period_first_treat_solar2[is.na(monthly_panel$period_first_treat_solar2)]<-0
+
+
+#Create a variable that indicates the first period of wind plant entering operation (t0) 
+monthly_panel <- monthly_panel %>%
+  group_by(id_municipio) %>%
+  mutate(treat_at_start_wind2 = if_else(month_year=="1-2007", new_mw_wind, NA)) %>%
+  mutate(period_first_treat_wind2 = if_else(t_wind == 0, month_year, NA)) %>%
+  mutate(avg_treat_wind2=sum(new_mw_wind)/192)%>%
+  fill(treat_at_start_wind2, .direction="downup")%>%
+  fill(period_first_treat_wind2,.direction="downup")%>%
+  mutate(increase_wind2=if_else(avg_treat_wind2>treat_at_start_wind2,1,0))
+
+#for control cohort first_treat==0 
+monthly_panel$period_first_treat_wind2[is.na(monthly_panel$period_first_treat_wind2)]<-0
+
+#Final vars for Sun & Abraham estimation
+monthly_panel$month_year <- as.Date(paste(monthly_panel$ano, monthly_panel$month, "01", sep = "-"), "%Y-%m-%d")
+monthly_panel$period_first_treat_solar2 <- as.Date(paste("01", monthly_panel$period_first_treat_solar2, sep = "-"), "%d-%m-%Y")
+
+#create numeric date var
+monthly_panel<-monthly_panel%>%arrange(id_municipio, ano, month)%>%
+  group_by(id_municipio)%>%
+  mutate(date=row_number())%>%
+  mutate(date_t0_solar = if_else(t_solar == 0, date, NA)) %>%
+  mutate(date_t0_wind = if_else(t_wind ==0, date, NA))%>%
+  select(id_municipio, month_year, date, everything())%>%
+  fill(date_t0_solar,.direction="downup")%>%
+  fill(date_t0_wind, .direction="downup")
+
+#for control group create cohort data outside of treated scope (required for sunab)
+monthly_panel$date_t0_solar[is.na(monthly_panel$date_t0_solar)]<-1000
+monthly_panel$date_t0_wind[is.na(monthly_panel$date_t0_wind)]<-1000
+
+#add annual level variables to monthly dataset
+annual_panel<-readRDS(here("final","annual_panel_final_noweights.RDS"))%>%
+  select(id_municipio, ano, populacao, sigla_uf,munic_index_general,irradiation_2017, pib_clean,avg_wind_speed,plant_5MW_distance, solarplant_5MW_distance, windplant_5MW_distance, coast_dist, at_coast, gdp_pc, no_firms_pc)
+
+monthly_panel2<- monthly_panel%>%left_join(annual_panel, by=c("id_municipio", "ano"))
+
+saveRDS(monthly_panel2, here("final","monthly_final_noweights.RDS"))
+```
+
+
+
+
+create solar spillover data for nearby municipality (not treated, but within 20-50km radius to treated)
+```{r}
+monthly_panel2<-readRDS(here("final","monthly_final_noweights.RDS"))
+
+library(sf)
+library(tidyverse)
+library(units)
+`%notin%` <- Negate(`%in%`)
+#create reverse cumulative sum function for leads
+revcumsum <- function(x){
+  x <- rev(cumsum(rev(x)))
+}
+#create a dataframe with longitude and latitude of locations that have solar park larger 5 MW
+mw_larger5_solar<-monthly_panel2%>%group_by(id_municipio)%>%filter(any(new_mw_solar>5))%>%select(starts_with("new_mw"),ano, id_municipio,lon,lat)%>%distinct(id_municipio,lon,lat)
+ 
+
+#create dataframe
+ 
+all_mun<-monthly_panel2%>%distinct(id_municipio,lon,lat)%>%
+  filter(id_municipio %notin% mw_larger5_solar$id_municipio)
+
+# convert dataframes to sf objects
+mw_larger5_solar <- st_as_sf(mw_larger5_solar, coords = c("lon", "lat"), crs = 4326)
+all_mun <- st_as_sf(all_mun, coords = c("lon", "lat"), crs = 4326)
+
+# Transform to Cartesian CRS for appropriate distance calculation
+mw_larger5_solar <- st_transform(mw_larger5_solar, 3857)
+all_mun <- st_transform(all_mun, 3857)
+
+within_distance_list <- st_is_within_distance(all_mun, mw_larger5_solar, dist = set_units(20000, "meters"))
+
+nearby_solar_list <- lapply(within_distance_list, function(x) {
+  nearby_solar_ids <- mw_larger5_solar$id_municipio[unlist(x)]
+  if (length(nearby_solar_ids) == 0) NA else nearby_solar_ids
+})
+
+
+names(nearby_solar_list) <- all_mun$id_municipio
+
+nearby_solar_df <- tibble(id_municipio = names(nearby_solar_list), nearby_solar = nearby_solar_list)
+
+max_len <- max(map_int(nearby_solar_df$nearby_solar, length), na.rm = TRUE)
+
+nearby_solar_df <- nearby_solar_df %>%
+  mutate(data = map(nearby_solar, ~ `length<-`(.x, max_len))) %>%
+  unnest_wider(data, names_sep = "_") %>%
+  rename_at(vars(starts_with("data_")), ~ str_replace(., "data_", "solar_"))
+
+#rename variables for final spillover dataset
+nearby_solar_df<-nearby_solar_df%>%select(1,3,4)%>%
+  rename(solar_spillover20k_1=solar_1, 
+         solar_spillover20k_2=solar_2)
+
+#Re do for 20-40km radius
+# Find all municipalities within 40km
+within_40km_list <- st_is_within_distance(all_mun, mw_larger5_solar, dist = set_units(40000, "meters"))
+
+# Find all municipalities within 20km
+within_20km_list <- st_is_within_distance(all_mun, mw_larger5_solar, dist = set_units(20000, "meters"))
+
+# Determine municipalities that are more than 20km but less than or equal to 40km away
+nearby_solar_list2 <- mapply(function(x, y) {
+  nearby_solar_ids_40km <- mw_larger5_solar$id_municipio[unlist(x)]
+  nearby_solar_ids_20km <- mw_larger5_solar$id_municipio[unlist(y)]
+  nearby_solar_ids <- setdiff(nearby_solar_ids_40km, nearby_solar_ids_20km)
+  if (length(nearby_solar_ids) == 0) NA else nearby_solar_ids
+}, within_40km_list, within_20km_list)
+
+names(nearby_solar_list2) <- all_mun$id_municipio
+
+nearby_solar_df2 <- tibble(id_municipio = names(nearby_solar_list2), nearby_solar = nearby_solar_list2)
+
+max_len <- max(map_int(nearby_solar_df2$nearby_solar, length), na.rm = TRUE)
+
+nearby_solar_df2 <- nearby_solar_df2 %>%
+  mutate(data = map(nearby_solar, ~ `length<-`(.x, max_len))) %>%
+  unnest_wider(data, names_sep = "_") %>%
+  rename_at(vars(starts_with("data_")), ~ str_replace(., "data_", "solar_"))
+
+#rename variables for final spillover dataset
+nearby_solar_df2<-nearby_solar_df2%>%arrange(desc(nearby_solar))%>%
+  select(1,3,4,5,6)%>%
+  rename(solar_spillover40k_1=solar_1, 
+         solar_spillover40k_2=solar_2,
+         solar_spillover40k_3=solar_3,
+         solar_spillover40k_4=solar_4)
+
+#Re do for 40-50km radius
+# Find all municipalities within 40km
+within_50km_list <- st_is_within_distance(all_mun, mw_larger5_solar, dist = set_units(50000, "meters"))
+
+# Find all municipalities within 40km
+within_40km_list <- st_is_within_distance(all_mun, mw_larger5_solar, dist = set_units(40000, "meters"))
+
+# Determine municipalities that are more than 40km but less than or equal to 50km away
+nearby_solar_list3 <- mapply(function(x, y) {
+  nearby_solar_ids_50km <- mw_larger5_solar$id_municipio[unlist(x)]
+  nearby_solar_ids_40km <- mw_larger5_solar$id_municipio[unlist(y)]
+  nearby_solar_ids <- setdiff(nearby_solar_ids_50km, nearby_solar_ids_40km)
+  if (length(nearby_solar_ids) == 0) NA else nearby_solar_ids
+}, within_50km_list, within_40km_list)
+
+names(nearby_solar_list3) <- all_mun$id_municipio
+
+nearby_solar_df3 <- tibble(id_municipio = names(nearby_solar_list3), nearby_solar = nearby_solar_list3)
+
+max_len <- max(map_int(nearby_solar_df3$nearby_solar, length), na.rm = TRUE)
+
+nearby_solar_df3 <- nearby_solar_df3 %>%
+  mutate(data = map(nearby_solar, ~ `length<-`(.x, max_len))) %>%
+  unnest_wider(data, names_sep = "_") %>%
+  rename_at(vars(starts_with("data_")), ~ str_replace(., "data_", "solar_"))
+
+#rename variables for final spillover dataset
+nearby_solar_df3<-nearby_solar_df3%>%arrange(desc(nearby_solar))%>%
+  select(1,3,4)%>%
+  rename(solar_spillover50k_1=solar_1, 
+         solar_spillover50k_2=solar_2)
+
+month_years<-monthly_panel2%>%select(id_municipio, ano, month)
+
+
+spillover_solar_df<-nearby_solar_df%>%
+  left_join(nearby_solar_df2, by=("id_municipio"))%>%
+  left_join(nearby_solar_df3, by=c("id_municipio"))
+spillover_solar_df$id_municipio<-as.integer(spillover_solar_df$id_municipio)
+
+spillover_solar_df<- spillover_solar_df%>%
+  left_join(month_years, by=c("id_municipio"))
+
+  
+#getting the treatment assignment 
+treatment<-monthly_panel2%>%select(id_municipio, ano, month, new_mw_solar, lcr_municipality, bndes_municipality)
+
+spillover_solar_df_final<-spillover_solar_df%>%
+  left_join(treatment, by=c("solar_spillover20k_1"="id_municipio","ano","month"), suffix=c("","_20k1"))%>%
+  left_join(treatment, by=c("solar_spillover20k_2"="id_municipio","ano", "month"), suffix=c("","_20k2"))%>%
+  left_join(treatment, by=c("solar_spillover40k_1"="id_municipio","ano", "month"), suffix=c("","_40k1"))%>%
+  left_join(treatment, by=c("solar_spillover40k_2"="id_municipio","ano", "month"), suffix=c("","_40k2"))%>%
+  left_join(treatment, by=c("solar_spillover40k_3"="id_municipio","ano", "month"), suffix=c("","_40k3"))%>%
+  left_join(treatment, by=c("solar_spillover40k_4"="id_municipio","ano", "month"), suffix=c("","_40k4"))%>%
+  left_join(treatment, by=c("solar_spillover50k_1"="id_municipio","ano", "month"), suffix=c("","_50k1"))%>%
+  left_join(treatment, by=c("solar_spillover50k_2"="id_municipio","ano", "month"), suffix=c("","_50k2"))
+
+spillover_solar_df_final$solar_spillover_20k_MW <- rowSums(spillover_solar_df_final[, c('new_mw_solar', 'new_mw_solar_20k2')], na.rm = TRUE)
+spillover_solar_df_final$solar_spillover_40k_MW <- rowSums(spillover_solar_df_final[, c('new_mw_solar_40k1', 'new_mw_solar_40k2','new_mw_solar_40k3','new_mw_solar_40k4')], na.rm = TRUE)
+spillover_solar_df_final$solar_spillover_50k_MW <- rowSums(spillover_solar_df_final[, c('new_mw_solar_50k1', 'new_mw_solar_50k2')], na.rm = TRUE)
+spillover_solar_df_final$solar_spill_lcr_municipality_20k <- rowSums(spillover_solar_df_final[, c('lcr_municipality', 'lcr_municipality_20k2')], na.rm = TRUE)
+spillover_solar_df_final$solar_spill_lcr_municipality_40k <- rowSums(spillover_solar_df_final[, c('lcr_municipality_40k1', 'lcr_municipality_40k2','lcr_municipality_40k3','lcr_municipality_40k4')], na.rm = TRUE)
+spillover_solar_df_final$solar_spill_lcr_municipality_50k <- rowSums(spillover_solar_df_final[, c('lcr_municipality_50k1', 'lcr_municipality_50k2')], na.rm = TRUE)
+spillover_solar_df_final$solar_spill_bndes_municipality_20k <- rowSums(spillover_solar_df_final[, c('bndes_municipality', 'bndes_municipality_20k2')], na.rm = TRUE)
+spillover_solar_df_final$solar_spill_bndes_municipality_40k <- rowSums(spillover_solar_df_final[, c('bndes_municipality_40k1', 'bndes_municipality_40k2','bndes_municipality_40k3','bndes_municipality_40k4')], na.rm = TRUE)
+spillover_solar_df_final$solar_spill_bndes_municipality_50k <- rowSums(spillover_solar_df_final[, c('bndes_municipality_50k1', 'bndes_municipality_50k2')], na.rm = TRUE)
+
+#removing unnecessary columns after sum
+spillover_solar_df_final<-spillover_solar_df_final%>%
+  select(-starts_with(c("new_mw_solar","bndes_municipality","lcr_municipality")))
+
+spillover_solar_df_final<-spillover_solar_df_final%>%
+  mutate(solar_spill_bndes_municipality_50k=if_else(solar_spill_bndes_municipality_50k>0,1,0))%>%
+    mutate(solar_spill_bndes_municipality_40k=if_else(solar_spill_bndes_municipality_40k>0,1,0))%>%
+  mutate(solar_spill_bndes_municipality_20k=if_else(solar_spill_bndes_municipality_20k>0,1,0))%>%
+mutate(solar_spill_lcr_municipality_50k=if_else(solar_spill_lcr_municipality_50k>0,1,0))%>%
+    mutate(solar_spill_lcr_municipality_40k=if_else(solar_spill_lcr_municipality_40k>0,1,0))%>%
+  mutate(solar_spill_lcr_municipality_20k=if_else(solar_spill_lcr_municipality_20k>0,1,0))
+
+# create lead and lag variables
+for (i in 1:37) {
+  col_name <- paste0("d_solar_20k_pre", i)
+  spillover_solar_df_final <- spillover_solar_df_final %>%
+    mutate(!!col_name := c(tail(solar_spillover_20k_MW, -i), rep(0, i)))
+}
+
+#for post periods create lags
+for (i in 1:37) {
+  col_name <- paste0("d_solar_20k_post", i)
+  spillover_solar_df_final <- spillover_solar_df_final %>%
+    mutate(!!col_name := c(rep(0, i), head(solar_spillover_20k_MW, -i)))
+}
+
+
+spillover_solar_df_final$d_solar_20k_pre37_bin <- ave(spillover_solar_df_final$d_solar_20k_pre37,spillover_solar_df_final$id_municipio, FUN = revcumsum)
+
+spillover_solar_df_final$d_solar_20k_post25_bin<-ave(spillover_solar_df_final$d_solar_20k_post25,spillover_solar_df_final$id_municipio, FUN = cumsum)
+spillover_solar_df_final$d_solar_20k_post37_bin<-ave(spillover_solar_df_final$d_solar_20k_post37,spillover_solar_df_final$id_municipio, FUN = cumsum)
+
+
+#create a variable that indicates the year relative to the first introduction of solar and wind in the data period
+spillover_solar_df_final<-spillover_solar_df_final%>%arrange(id_municipio, ano,month)
+detach("package:dplyr", unload = TRUE)
+library(dplyr, warn.conflicts = FALSE)
+spillover_solar_df_final <- spillover_solar_df_final %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index <- which(.x$solar_spillover_20k_MW > 0)[1]
+    if (is.na(switch_index)) {
+      .x %>% mutate(t_solar_20k = NA_real_)
+    } else {
+      .x %>% mutate(t_solar_20k = row_number() - switch_index)
+    }
+  })
+
+# create lead and lag variables
+for (i in 1:37) {
+  col_name <- paste0("d_solar_40k_pre", i)
+  spillover_solar_df_final <- spillover_solar_df_final %>%
+    mutate(!!col_name := c(tail(solar_spillover_40k_MW, -i), rep(0, i)))
+}
+
+#for post periods create lags
+for (i in 1:37) {
+  col_name <- paste0("d_solar_40k_post", i)
+  spillover_solar_df_final <- spillover_solar_df_final %>%
+    mutate(!!col_name := c(rep(0, i), head(solar_spillover_40k_MW, -i)))
+}
+
+spillover_solar_df_final$d_solar_40k_pre37_bin <- ave(spillover_solar_df_final$d_solar_40k_pre37,spillover_solar_df_final$id_municipio, FUN = revcumsum)
+
+spillover_solar_df_final$d_solar_40k_post25_bin <- ave(spillover_solar_df_final$d_solar_40k_post25,spillover_solar_df_final$id_municipio, FUN = cumsum)
+spillover_solar_df_final$d_solar_40k_post37_bin <- ave(spillover_solar_df_final$d_solar_40k_post37,spillover_solar_df_final$id_municipio, FUN = cumsum)
+
+#create a variable that indicates the year relative to the first introduction of solar and wind in the data period
+spillover_solar_df_final<-spillover_solar_df_final%>%arrange(id_municipio, ano,month)
+detach("package:dplyr", unload = TRUE)
+library(dplyr, warn.conflicts = FALSE)
+spillover_solar_df_final <- spillover_solar_df_final %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index <- which(.x$solar_spillover_40k_MW > 0)[1]
+    if (is.na(switch_index)) {
+      .x %>% mutate(t_solar_40k = NA_real_)
+    } else {
+      .x %>% mutate(t_solar_40k = row_number() - switch_index)
+    }
+  })
+
+
+spillover_solar_df_final <- spillover_solar_df_final %>%
+  select(id_municipio, ano,month, everything())
+
+#merge remaining control variables back to the dataframe
+merge<-monthly_panel2%>%select(-contains(c("net","mw", "MW", "d_solar","d_wind","no_plants","mw_operation","plants","bndes")))
+
+spillover_solar_df_final<-spillover_solar_df_final%>%
+  left_join(merge, by=c("id_municipio","ano","month"))
+
+saveRDS(spillover_solar_df_final,here("final","solar_spillover_monthly_final_noweights.RDS"))
+rm(list=setdiff(ls(), c("monthly_panel2")))
+
+```
+
+
+create wind spillover data for nearby municipality (not treated, but within 20-50km radius to treated)
+```{r}
+library(sf)
+library(tidyverse)
+`%notin%` <- Negate(`%in%`)
+#create reverse cumulative sum function for leads
+revcumsum <- function(x){
+  x <- rev(cumsum(rev(x)))
+}
+#create a dataframe with longitude and latitude of locations that have wind park larger 5 MW
+mw_larger5_wind<-monthly_panel2%>%group_by(id_municipio)%>%filter(any(new_mw_wind>5))%>%select(starts_with("new_mw"),ano, id_municipio,lon,lat)%>%distinct(id_municipio,lon,lat)
+ 
+
+#create dataframe
+ 
+all_mun<-monthly_panel2%>%distinct(id_municipio,lon,lat)%>%
+  filter(id_municipio %notin% mw_larger5_wind$id_municipio)
+
+# convert dataframes to sf objects
+mw_larger5_wind <- st_as_sf(mw_larger5_wind, coords = c("lon", "lat"), crs = 4326)
+all_mun <- st_as_sf(all_mun, coords = c("lon", "lat"), crs = 4326)
+
+# Transform to Cartesian CRS for appropriate distance calculation
+mw_larger5_wind <- st_transform(mw_larger5_wind, 3857)
+all_mun <- st_transform(all_mun, 3857)
+
+within_distance_list <- st_is_within_distance(all_mun, mw_larger5_wind, dist = set_units(20000, "meters"))
+
+nearby_wind_list <- lapply(within_distance_list, function(x) {
+  nearby_wind_ids <- mw_larger5_wind$id_municipio[unlist(x)]
+  if (length(nearby_wind_ids) == 0) NA else nearby_wind_ids
+})
+
+
+names(nearby_wind_list) <- all_mun$id_municipio
+
+nearby_wind_df <- tibble(id_municipio = names(nearby_wind_list), nearby_wind = nearby_wind_list)
+
+max_len <- max(map_int(nearby_wind_df$nearby_wind, length), na.rm = TRUE)
+
+nearby_wind_df <- nearby_wind_df %>%
+  mutate(data = map(nearby_wind, ~ `length<-`(.x, max_len))) %>%
+  unnest_wider(data, names_sep = "_") %>%
+  rename_at(vars(starts_with("data_")), ~ str_replace(., "data_", "wind_"))
+
+#rename variables for final spillover dataset
+nearby_wind_df<-nearby_wind_df%>%select(1,3,4)%>%
+  rename(wind_spillover20k_1=wind_1, 
+         wind_spillover20k_2=wind_2)
+
+#Re do for 20-40km radius
+# Find all municipalities within 40km
+within_40km_list <- st_is_within_distance(all_mun, mw_larger5_wind, dist = set_units(40000, "meters"))
+
+# Find all municipalities within 20km
+within_20km_list <- st_is_within_distance(all_mun, mw_larger5_wind, dist = set_units(20000, "meters"))
+
+# Determine municipalities that are more than 20km but less than or equal to 40km away
+nearby_wind_list2 <- mapply(function(x, y) {
+  nearby_wind_ids_40km <- mw_larger5_wind$id_municipio[unlist(x)]
+  nearby_wind_ids_20km <- mw_larger5_wind$id_municipio[unlist(y)]
+  nearby_wind_ids <- setdiff(nearby_wind_ids_40km, nearby_wind_ids_20km)
+  if (length(nearby_wind_ids) == 0) NA else nearby_wind_ids
+}, within_40km_list, within_20km_list)
+
+names(nearby_wind_list2) <- all_mun$id_municipio
+
+nearby_wind_df2 <- tibble(id_municipio = names(nearby_wind_list2), nearby_wind = nearby_wind_list2)
+
+max_len <- max(map_int(nearby_wind_df2$nearby_wind, length), na.rm = TRUE)
+
+nearby_wind_df2 <- nearby_wind_df2 %>%
+  mutate(data = map(nearby_wind, ~ `length<-`(.x, max_len))) %>%
+  unnest_wider(data, names_sep = "_") %>%
+  rename_at(vars(starts_with("data_")), ~ str_replace(., "data_", "wind_"))
+
+#rename variables for final spillover dataset
+nearby_wind_df2<-nearby_wind_df2%>%arrange(desc(nearby_wind))%>%
+  select(1,3,4,5,6)%>%
+  rename(wind_spillover40k_1=wind_1, 
+         wind_spillover40k_2=wind_2,
+         wind_spillover40k_3=wind_3,
+         wind_spillover40k_4=wind_4)
+
+#Re do for 40-50km radius
+# Find all municipalities within 40km
+within_50km_list <- st_is_within_distance(all_mun, mw_larger5_wind, dist = set_units(50000, "meters"))
+
+# Find all municipalities within 40km
+within_40km_list <- st_is_within_distance(all_mun, mw_larger5_wind, dist = set_units(40000, "meters"))
+
+# Determine municipalities that are more than 40km but less than or equal to 50km away
+nearby_wind_list3 <- mapply(function(x, y) {
+  nearby_wind_ids_50km <- mw_larger5_wind$id_municipio[unlist(x)]
+  nearby_wind_ids_40km <- mw_larger5_wind$id_municipio[unlist(y)]
+  nearby_wind_ids <- setdiff(nearby_wind_ids_50km, nearby_wind_ids_40km)
+  if (length(nearby_wind_ids) == 0) NA else nearby_wind_ids
+}, within_50km_list, within_40km_list)
+
+names(nearby_wind_list3) <- all_mun$id_municipio
+
+nearby_wind_df3 <- tibble(id_municipio = names(nearby_wind_list3), nearby_wind = nearby_wind_list3)
+
+max_len <- max(map_int(nearby_wind_df3$nearby_wind, length), na.rm = TRUE)
+
+nearby_wind_df3 <- nearby_wind_df3 %>%
+  mutate(data = map(nearby_wind, ~ `length<-`(.x, max_len))) %>%
+  unnest_wider(data, names_sep = "_") %>%
+  rename_at(vars(starts_with("data_")), ~ str_replace(., "data_", "wind_"))
+
+#rename variables for final spillover dataset
+nearby_wind_df3<-nearby_wind_df3%>%arrange(desc(nearby_wind))%>%
+  select(1,3,4)%>%
+  rename(wind_spillover50k_1=wind_1, 
+         wind_spillover50k_2=wind_2)
+
+month_years<-monthly_panel2%>%select(id_municipio, ano, month)
+
+
+spillover_wind_df<-nearby_wind_df%>%
+  left_join(nearby_wind_df2, by=("id_municipio"))%>%
+  left_join(nearby_wind_df3, by=c("id_municipio"))
+spillover_wind_df$id_municipio<-as.integer(spillover_wind_df$id_municipio)
+
+spillover_wind_df<- spillover_wind_df%>%
+  left_join(month_years, by=c("id_municipio"))
+
+  
+#getting the treatment assignment 
+treatment<-monthly_panel2%>%select(id_municipio, ano, month, new_mw_wind, lcr_municipality, bndes_municipality)
+
+spillover_wind_df_final<-spillover_wind_df%>%
+  left_join(treatment, by=c("wind_spillover20k_1"="id_municipio","ano","month"), suffix=c("","_20k1"))%>%
+  left_join(treatment, by=c("wind_spillover20k_2"="id_municipio","ano", "month"), suffix=c("","_20k2"))%>%
+  left_join(treatment, by=c("wind_spillover40k_1"="id_municipio","ano", "month"), suffix=c("","_40k1"))%>%
+  left_join(treatment, by=c("wind_spillover40k_2"="id_municipio","ano", "month"), suffix=c("","_40k2"))%>%
+  left_join(treatment, by=c("wind_spillover40k_3"="id_municipio","ano", "month"), suffix=c("","_40k3"))%>%
+  left_join(treatment, by=c("wind_spillover40k_4"="id_municipio","ano", "month"), suffix=c("","_40k4"))%>%
+  left_join(treatment, by=c("wind_spillover50k_1"="id_municipio","ano", "month"), suffix=c("","_50k1"))%>%
+  left_join(treatment, by=c("wind_spillover50k_2"="id_municipio","ano", "month"), suffix=c("","_50k2"))
+
+spillover_wind_df_final$wind_spillover_20k_MW <- rowSums(spillover_wind_df_final[, c('new_mw_wind', 'new_mw_wind_20k2')], na.rm = TRUE)
+spillover_wind_df_final$wind_spillover_40k_MW <- rowSums(spillover_wind_df_final[, c('new_mw_wind_40k1', 'new_mw_wind_40k2','new_mw_wind_40k3','new_mw_wind_40k4')], na.rm = TRUE)
+spillover_wind_df_final$wind_spillover_50k_MW <- rowSums(spillover_wind_df_final[, c('new_mw_wind_50k1', 'new_mw_wind_50k2')], na.rm = TRUE)
+spillover_wind_df_final$wind_spill_lcr_municipality_20k <- rowSums(spillover_wind_df_final[, c('lcr_municipality', 'lcr_municipality_20k2')], na.rm = TRUE)
+spillover_wind_df_final$wind_spill_lcr_municipality_40k <- rowSums(spillover_wind_df_final[, c('lcr_municipality_40k1', 'lcr_municipality_40k2','lcr_municipality_40k3','lcr_municipality_40k4')], na.rm = TRUE)
+spillover_wind_df_final$wind_spill_lcr_municipality_50k <- rowSums(spillover_wind_df_final[, c('lcr_municipality_50k1', 'lcr_municipality_50k2')], na.rm = TRUE)
+spillover_wind_df_final$wind_spill_bndes_municipality_20k <- rowSums(spillover_wind_df_final[, c('bndes_municipality', 'bndes_municipality_20k2')], na.rm = TRUE)
+spillover_wind_df_final$wind_spill_bndes_municipality_40k <- rowSums(spillover_wind_df_final[, c('bndes_municipality_40k1', 'bndes_municipality_40k2','bndes_municipality_40k3','bndes_municipality_40k4')], na.rm = TRUE)
+spillover_wind_df_final$wind_spill_bndes_municipality_50k <- rowSums(spillover_wind_df_final[, c('bndes_municipality_50k1', 'bndes_municipality_50k2')], na.rm = TRUE)
+
+#removing unnecessary columns after sum
+spillover_wind_df_final<-spillover_wind_df_final%>%
+  select(-starts_with(c("new_mw_wind","bndes_municipality","lcr_municipality")))
+
+spillover_wind_df_final<-spillover_wind_df_final%>%
+  mutate(wind_spill_bndes_municipality_50k=if_else(wind_spill_bndes_municipality_50k>0,1,0))%>%
+    mutate(wind_spill_bndes_municipality_40k=if_else(wind_spill_bndes_municipality_40k>0,1,0))%>%
+  mutate(wind_spill_bndes_municipality_20k=if_else(wind_spill_bndes_municipality_20k>0,1,0))%>%
+mutate(wind_spill_lcr_municipality_50k=if_else(wind_spill_lcr_municipality_50k>0,1,0))%>%
+    mutate(wind_spill_lcr_municipality_40k=if_else(wind_spill_lcr_municipality_40k>0,1,0))%>%
+  mutate(wind_spill_lcr_municipality_20k=if_else(wind_spill_lcr_municipality_20k>0,1,0))
+
+# create lead and lag variables
+for (i in 1:37) {
+  col_name <- paste0("d_wind_20k_pre", i)
+  spillover_wind_df_final <- spillover_wind_df_final %>%
+    mutate(!!col_name := c(tail(wind_spillover_20k_MW, -i), rep(0, i)))
+}
+
+#for post periods create lags
+for (i in 1:37) {
+  col_name <- paste0("d_wind_20k_post", i)
+  spillover_wind_df_final <- spillover_wind_df_final %>%
+    mutate(!!col_name := c(rep(0, i), head(wind_spillover_20k_MW, -i)))
+}
+
+
+spillover_wind_df_final$d_wind_20k_pre37_bin <- ave(spillover_wind_df_final$d_wind_20k_pre37,spillover_wind_df_final$id_municipio, FUN = revcumsum)
+
+spillover_wind_df_final$d_wind_20k_post25_bin<-ave(spillover_wind_df_final$d_wind_20k_post25,spillover_wind_df_final$id_municipio, FUN = cumsum)
+spillover_wind_df_final$d_wind_20k_post37_bin<-ave(spillover_wind_df_final$d_wind_20k_post37,spillover_wind_df_final$id_municipio, FUN = cumsum)
+
+#create a variable that indicates the year relative to the first introduction of wind and wind in the data period
+spillover_wind_df_final<-spillover_wind_df_final%>%arrange(id_municipio, ano,month)
+detach("package:dplyr", unload = TRUE)
+library(dplyr, warn.conflicts = FALSE)
+spillover_wind_df_final <- spillover_wind_df_final %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index <- which(.x$wind_spillover_20k_MW > 0)[1]
+    if (is.na(switch_index)) {
+      .x %>% mutate(t_wind_20k = NA_real_)
+    } else {
+      .x %>% mutate(t_wind_20k = row_number() - switch_index)
+    }
+  })
+
+# create lead and lag variables
+for (i in 1:37) {
+  col_name <- paste0("d_wind_40k_pre", i)
+  spillover_wind_df_final <- spillover_wind_df_final %>%
+    mutate(!!col_name := c(tail(wind_spillover_40k_MW, -i), rep(0, i)))
+}
+
+#for post periods create lags
+for (i in 1:37) {
+  col_name <- paste0("d_wind_40k_post", i)
+  spillover_wind_df_final <- spillover_wind_df_final %>%
+    mutate(!!col_name := c(rep(0, i), head(wind_spillover_40k_MW, -i)))
+}
+
+
+spillover_wind_df_final$d_wind_40k_pre37_bin <- ave(spillover_wind_df_final$d_wind_40k_pre37,spillover_wind_df_final$id_municipio, FUN = revcumsum)
+
+spillover_wind_df_final$d_wind_40k_post25_bin<-ave(spillover_wind_df_final$d_wind_40k_post25,spillover_wind_df_final$id_municipio, FUN = cumsum)
+spillover_wind_df_final$d_wind_40k_post37_bin<-ave(spillover_wind_df_final$d_wind_40k_post37,spillover_wind_df_final$id_municipio, FUN = cumsum)
+
+
+#create a variable that indicates the year relative to the first introduction of wind and wind in the data period
+spillover_wind_df_final<-spillover_wind_df_final%>%arrange(id_municipio, ano,month)
+detach("package:dplyr", unload = TRUE)
+library(dplyr, warn.conflicts = FALSE)
+spillover_wind_df_final <- spillover_wind_df_final %>%
+  group_by(id_municipio) %>%
+  group_modify(~ {
+    switch_index <- which(.x$wind_spillover_40k_MW > 0)[1]
+    if (is.na(switch_index)) {
+      .x %>% mutate(t_wind_40k = NA_real_)
+    } else {
+      .x %>% mutate(t_wind_40k = row_number() - switch_index)
+    }
+  })
+
+
+
+spillover_wind_df_final <- spillover_wind_df_final %>%
+  select(id_municipio, ano,month, everything())
+
+#merge remaining control variables back to the dataframe
+merge<-monthly_panel2%>%select(-contains(c("mw", "MW", "d_wind","d_wind","no_plants","mw_operation","plants","bndes")))
+
+spillover_wind_df_final<-spillover_wind_df_final%>%
+  left_join(merge, by=c("id_municipio","ano","month"))
+
+saveRDS(spillover_wind_df_final, here("final", "wind_spillover_monthly_final_noweights.RDS"))
+```
+
+
+Add. the spillover data that was created in monthly panel to the annual panel
+```{r}
+annual_panel<-readRDS(here("final","annual_panel_final_noweights.RDS"))
+monthly_panel<-readRDS(here("final","monthly_final_noweights.RDS"))%>%
+  select(id_municipio, ano,month,solar_othersolar_within50k, wind_otherwind_within50k)
+spillover_data<-monthly_panel%>%
+  group_by(id_municipio, ano)%>%
+  summarise(d_spill_solar0=sum(solar_othersolar_within50k),
+            d_spill_wind0=sum(wind_otherwind_within50k))
+
+annual_panel<-annual_panel%>%
+  left_join(spillover_data, by=c("id_municipio","ano"))
+
+annual_panel<-annual_panel%>%arrange(id_municipio,ano)
+
+annual_panel <- annual_panel %>%group_by(id_municipio)%>% 
+  mutate(d_spill_wind_post1 = dplyr::lag(d_spill_wind0, n = 1, default = 0),
+         d_spill_wind_post2 = dplyr::lag(d_spill_wind0, n = 2, default = 0),
+         
+         d_spill_wind_pre1 = dplyr::lead(d_spill_wind0, n=1, default=0),
+          d_spill_wind_pre2 = dplyr::lead(d_spill_wind0, n=2, default=0),
+          d_spill_solar_post1 = dplyr::lag(d_spill_solar0, n = 1, default = 0),
+           d_spill_solar_post2 = dplyr::lag(d_spill_solar0, n = 2, default = 0),
+           d_spill_solar_pre1 = dplyr::lead(d_spill_solar0, n=1, default=0),
+           d_spill_solar_pre2 = dplyr::lead(d_spill_solar0, n=2, default=0))
+
+# Identify columns that start with "d_spill"
+spill_columns <- grep("^d_spill", colnames(annual_panel), value = TRUE)
+
+# Replace NAs with zeros in identified columns
+annual_panel[, spill_columns][is.na(annual_panel[, spill_columns])] <- 0
+
+saveRDS(annual_panel,here("final","annual_panel_final_noweights.RDS"))
+```

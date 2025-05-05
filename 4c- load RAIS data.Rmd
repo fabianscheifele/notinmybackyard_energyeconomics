@@ -1,0 +1,991 @@
+---
+title: "4c- load RAIS data"
+author: "Fabian Scheifele"
+date: "2023-03-15"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+0. load packages
+```{r setup, include=FALSE}
+suppressMessages(memory.limit(size = NA))
+
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","knitr","here", "data.table","basedosdados","bigrquery", "dbplyr","janitor","fuzzyjoin","zoo"))
+
+`%notin%` <- Negate(`%in%`)
+```
+
+1. set the google cloud console ID and project
+```{r}
+#PLEASE REPLACE WITH YOUR OWN BILLING ID from Google Console throughout the file. You may be required to use multiple project IDs because there are certain download limits per ID. This is why this code is repeated several times throughout the file 
+set_billing_id("")
+```
+
+2. RAIS data establishment level (already done, can simply load RDS file)
+```{r}
+#First wind park beyond 5 MW enters operation in 2006, hence we start collecting data from 2000
+
+#query that groups by size of firm and also counts the firms in each municipality and size group
+rais_establishment2<-basedosdados::read_sql(query="SELECT id_municipio, ano, tamanho_estabelecimento, SUM(quantidade_vinculos_ativos) as total_jobs, SUM(quantidade_vinculos_clt) as full_time, SUM(quantidade_vinculos_estatutarios) as public_jobs, COUNT(quantidade_vinculos_ativos) as no_establishments, SUM(indicador_rais_negativa) as inactive_establishments
+FROM `basedosdados.br_me_rais.microdados_estabelecimentos`  
+WHERE ano BETWEEN 2000 AND 2022
+GROUP BY id_municipio, tamanho_estabelecimento, ano") 
+
+rais_establishment2<-rais_establishment2%>%arrange(id_municipio,ano,tamanho_estabelecimento)
+write_rds(rais_establishment2, here("raw","rais_establishment_alljobs.RDS"))
+
+set_billing_id("")
+
+#count only the establishments that are classified as private firms 
+rais_private_firms<-basedosdados::read_sql(query="SELECT id_municipio, ano, tamanho_estabelecimento, COUNT(quantidade_vinculos_ativos) as no_establ_private, SUM(indicador_rais_negativa) as inactive_firms_private
+FROM `basedosdados.br_me_rais.microdados_estabelecimentos`  
+WHERE ano BETWEEN 2000 AND 2022 and natureza_juridica LIKE'2%'
+GROUP BY id_municipio, tamanho_estabelecimento, ano") 
+rais_private_firms<-rais_private_firms%>%arrange(id_municipio,ano,tamanho_estabelecimento)
+write_rds(rais_private_firms, here("raw","rais_establishment_private.RDS"))
+```
+
+3. RAIS employee-level data Part 1 (wages and total employment per municipio-year)
+```{r}
+set_billing_id("")
+all_jobs <- basedosdados::read_sql(query = "
+  SELECT 
+    id_municipio, 
+    ano, 
+    SUM(CAST(vinculo_ativo_3112 AS INT64)) as total_jobs_3112, 
+    AVG(idade) as mean_age
+  FROM `basedosdados.br_me_rais.microdados_vinculos`
+  GROUP BY id_municipio, ano
+")
+
+
+saveRDS(all_jobs, here("raw","rais_linklevel_alljobs.RDS"))
+
+#Excluding wages with value of zero:
+set_billing_id("")
+wages_larger_zero<-basedosdados::read_sql(query="SELECT id_municipio, ano,
+AVG(valor_remuneracao_media) as avg_wage, 
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano BETWEEN 2000 AND 2022 and valor_remuneracao_media>0
+GROUP BY id_municipio, ano") 
+saveRDS(wages_larger_zero, here("raw","avg_wages.RDS"))
+
+#Calculate median wage
+median_wages<-basedosdados::read_sql(query="SELECT DISTINCT id_municipio, ano, percentile_cont(valor_remuneracao_media, 0.5) 
+   over(partition by id_municipio, ano)
+  as median_wage, 
+  FROM `basedosdados.br_me_rais.microdados_vinculos`  
+  WHERE ano BETWEEN 2000 AND 2022 and valor_remuneracao_media>0")
+saveRDS(median_wages, here("raw","median_wages.RDS"))
+
+#jobs by type of employment contract
+set_billing_id("")
+link_level<-basedosdados::read_sql(query="SELECT id_municipio, ano, tipo_vinculo, SUM(CAST(vinculo_ativo_3112 AS INT64)) as total_jobs_3112
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano BETWEEN 2000 AND 2022
+GROUP BY id_municipio, ano, tipo_vinculo") 
+link_level <- type.convert(link_level, as.is = TRUE) 
+saveRDS(link_level, here("raw","rais_total_vinculo.RDS"))
+
+total_jobs<-link_level%>%group_by(ano, id_municipio)%>%
+  summarise(total_jobs_3112=sum(total_jobs_3112,na.rm=TRUE))
+
+temporarios<-link_level%>%filter(tipo_vinculo=="50")%>%rename(temporary_3112=total_jobs_3112)%>%select(1,2,4)
+clt_ind<-link_level%>%filter(tipo_vinculo %in% c("10","15","20","25"))%>%
+  group_by(ano, id_municipio)%>%
+  summarise(clt_ind_3112=sum(total_jobs_3112,na.rm=TRUE))
+
+clt_det<-link_level%>%filter(tipo_vinculo %in% c("60","65","70","75","90","95","96","97"))%>%
+  group_by(ano, id_municipio)%>%
+  summarise(clt_det_3112=sum(total_jobs_3112,na.rm=TRUE))
+
+rais_annual<-left_join(total_jobs,temporarios, by=c("ano","id_municipio"))%>%
+  left_join(clt_det, by=c("ano","id_municipio"))%>%
+  left_join(clt_ind, by=c("ano", "id_municipio"))
+
+rais_annual[is.na(rais_annual)]<-0
+
+#jobs by type of education
+set_billing_id("")
+education<-basedosdados::read_sql(query="SELECT id_municipio, ano, grau_instrucao_apos_2005, SUM(CAST(vinculo_ativo_3112 AS INT64)) as total_jobs_3112
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano BETWEEN 2006 AND 2022
+GROUP BY id_municipio, ano, grau_instrucao_apos_2005") 
+education <- type.convert(education, as.is = TRUE) 
+saveRDS(education, here("raw","rais_education_annual.RDS"))
+
+#max. primary or incomplete secondary
+primary<-education%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(1:6))%>%
+  group_by(id_municipio,ano)%>%
+  summarise(primary_edu_3112=sum(total_jobs_3112))
+
+#secondary or incomplete university
+secondary<-education%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(7:8))%>%
+  group_by(id_municipio,ano)%>%
+  summarise(secondary_edu_3112=sum(total_jobs_3112))
+
+#tertiary complete
+tertiary<-education%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(9:11))%>%
+  group_by(id_municipio,ano)%>%
+  summarise(tertiary_edu_3112=sum(total_jobs_3112))
+
+#merging different education levels 
+rais_annual<-rais_annual%>%left_join(primary, by=c("ano","id_municipio"))%>%
+  left_join(secondary, by=c("ano","id_municipio"))%>%
+  left_join(tertiary, by=c("ano","id_municipio"))
+
+rais_annual[is.na(rais_annual) & rais_annual$ano>2005]<-0
+rais_annual<-rais_annual%>%arrange(id_municipio,ano)
+rais_annual<- rais_annual%>%filter(id_municipio!=0)
+
+saveRDS(rais_annual, here("intermediate","rais_annual_total.RDS"))
+
+#Add sector-specific annual education data
+#load solar and wind code 
+wind_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet = "wind_related cnae")
+solar_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet ="solar_related_CNAE_")
+solar_all<- solar_codes$cnae
+solar_all <-
+  paste0("'", gsub("'", "\\'", solar_all), "'", collapse = ",")
+
+wind_all<- wind_codes$cnae
+wind_all <-
+  paste0("'", gsub("'", "\\'", wind_all), "'", collapse = ",")
+
+
+education_wind<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, grau_instrucao_apos_2005, SUM(CAST(vinculo_ativo_3112 AS INT64)) as total_jobs_3112
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano BETWEEN 2006 AND 2022 and cnae_2_subclasse in (", wind_all, ")
+GROUP BY id_municipio, ano, grau_instrucao_apos_2005"))
+
+education_wind <- type.convert(education_wind, as.is = TRUE) 
+saveRDS(education_wind, here("raw","rais_education_annual_wind.RDS"))
+
+#max. primary or incomplete secondary
+primary_wind<-education_wind%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(1:6))%>%
+  group_by(id_municipio,ano)%>%
+  summarise(wind_primary_edu_3112=sum(total_jobs_3112))
+
+#secondary or incomplete university
+secondary_wind<-education_wind%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(7:8))%>%
+  group_by(id_municipio,ano)%>%
+  summarise(wind_secondary_edu_3112=sum(total_jobs_3112))
+
+#tertiary complete
+tertiary_wind<-education_wind%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(9:11))%>%
+  group_by(id_municipio,ano)%>%
+  summarise(wind_tertiary_edu_3112=sum(total_jobs_3112))
+
+education_solar<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, grau_instrucao_apos_2005, SUM(CAST(vinculo_ativo_3112 AS INT64)) as total_jobs_3112
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano BETWEEN 2006 AND 2022 and cnae_2_subclasse in (", solar_all, ")
+GROUP BY id_municipio, ano, grau_instrucao_apos_2005"))
+
+education_solar <- type.convert(education_solar, as.is = TRUE) 
+saveRDS(education_solar, here("raw","rais_education_annual_solar.RDS"))
+
+#max. primary or incomplete secondary
+primary_solar<-education_solar%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(1:6))%>%
+  group_by(id_municipio,ano)%>%
+  summarise(solar_primary_edu_3112=sum(total_jobs_3112))
+
+#secondary or incomplete university
+secondary_solar<-education_solar%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(7:8))%>%
+  group_by(id_municipio,ano)%>%
+  summarise(solar_secondary_edu_3112=sum(total_jobs_3112))
+
+#tertiary complete
+tertiary_solar<-education_solar%>%filter(ano!=2005, grau_instrucao_apos_2005 %in% c(9:11))%>%
+  group_by(id_municipio,ano)%>%
+  summarise(solar_tertiary_edu_3112=sum(total_jobs_3112))
+
+rais_annual<-readRDS(here("intermediate","rais_annual_total.RDS"))
+
+#left join is fine because lowest layer is total annual figures so all non-empty year-municipality combinations included 
+rais_annual<-rais_annual%>%
+  left_join(primary_solar, by=c("ano","id_municipio"))%>%
+  left_join(secondary_solar, by=c("ano","id_municipio"))%>%
+  left_join(tertiary_solar, by=c("ano","id_municipio"))%>%
+  left_join(primary_wind, by=c("ano","id_municipio"))%>%
+  left_join(secondary_wind, by=c("ano","id_municipio"))%>%
+  left_join(tertiary_wind, by=c("ano","id_municipio"))
+
+rais_annual[is.na(rais_annual) & rais_annual$ano>2005]<-0
+rais_annual<-rais_annual%>%arrange(id_municipio,ano)
+saveRDS(rais_annual,here("intermediate","rais_annual_total2.RDS"))
+
+```
+
+4. RAIS employee-level data Part 2 (grouped by sending and receiving municipio)
+```{r}
+set_billing_id("")
+between_cities<-basedosdados::read_sql(query="SELECT ano, id_municipio, id_municipio_trabalho,
+               SUM(CAST(vinculo_ativo_3112 AS INT64)) as total_jobs_3112, 
+                                COUNT(vinculo_ativo_3112) as total_jobs,
+                  FROM `basedosdados.br_me_rais.microdados_vinculos`  
+                                WHERE ano BETWEEN 2000 AND 2022
+                                GROUP BY ano, id_municipio, id_municipio_trabalho")
+between_cities<-between_cities%>%arrange(id_municipio_trabalho,ano,desc(id_municipio))
+saveRDS(between_cities, here("raw","jobs_between_municipalities.RDS"))
+
+between_cities<-read_rds(here("raw","jobs_between_municipalities.RDS"))
+between_cities <- type.convert(between_cities, as.is = TRUE)
+
+#Counting jobs that take place in the municipality but are registered elsewhere
+jobs_from_outside<-between_cities%>%
+  filter(id_municipio!=id_municipio_trabalho & !is.na(id_municipio_trabalho))%>%
+           group_by(id_municipio_trabalho, ano)%>%
+           summarise(jobs_from_outside=sum(total_jobs), jobs_from_outside3112=sum(total_jobs_3112))  
+
+saveRDS(jobs_from_outside, here("raw","jobs_from_outside.RDS"))
+
+#load solar and wind code and separate into 3 categories: component production, installation and O&M
+wind_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet = "wind_related cnae")
+solar_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet ="solar_related_CNAE_")
+
+solar_all<- solar_codes$cnae
+solar_all <-
+  paste0("'", gsub("'", "\\'", solar_all), "'", collapse = ",")
+
+between_cities_solar<-basedosdados::read_sql(query=paste("SELECT ano, id_municipio, id_municipio_trabalho,
+               SUM(CAST(vinculo_ativo_3112 AS INT64)) as total_jobs_3112, 
+                  FROM `basedosdados.br_me_rais.microdados_vinculos`  
+                                WHERE ano BETWEEN 2006 AND 2022 AND cnae_2_subclasse in (",solar_all,")
+                                GROUP BY ano, id_municipio, id_municipio_trabalho"))
+
+between_cities_solar<-between_cities_solar%>%arrange(id_municipio_trabalho,ano,desc(id_municipio))
+saveRDS(between_cities_solar, here("raw","jobs_between_municipalities_solar.RDS"))
+
+between_cities_solar<-read_rds(here("raw","jobs_between_municipalities_solar.RDS"))
+between_cities_solar <- type.convert(between_cities_solar, as.is = TRUE)
+
+
+#Counting jobs that take place in the municipality but are registered elsewhere
+jobs_from_outside_solar<-between_cities_solar%>%
+  filter(id_municipio!=id_municipio_trabalho & !is.na(id_municipio_trabalho))%>%
+           group_by(id_municipio_trabalho, ano)%>%
+           summarise(solar_jobs_from_outside3112=sum(total_jobs_3112))  
+
+#merge with total outside jobs to differentiate between years where reporting is simply inexistent and sector-specific NAs (no jobs in these sectors, hence can be replaced with zeros)
+jobs_from_outside<-read_rds(here("raw","jobs_from_outside.RDS"))
+jobs_from_outside<-jobs_from_outside%>% left_join(jobs_from_outside_solar, by=c("id_municipio_trabalho","ano"))
+jobs_from_outside$solar_jobs_from_outside3112[is.na(jobs_from_outside$solar_jobs_from_outside3112) & 
+                                                !is.na(jobs_from_outside$jobs_from_outside3112)]<-0
+remove(between_cities_solar)
+wind_all<- wind_codes$cnae
+wind_all <-
+  paste0("'", gsub("'", "\\'", wind_all), "'", collapse = ",")
+
+set_billing_id("")
+between_cities_wind<-basedosdados::read_sql(query=paste("SELECT ano, id_municipio, id_municipio_trabalho,
+               SUM(CAST(vinculo_ativo_3112 AS INT64)) as total_jobs_3112, 
+                  FROM `basedosdados.br_me_rais.microdados_vinculos`  
+                                WHERE ano BETWEEN 2006 AND 2022 AND cnae_2_subclasse in (",wind_all,")
+                                GROUP BY ano, id_municipio, id_municipio_trabalho"))
+
+between_cities_wind<-between_cities_wind%>%arrange(id_municipio_trabalho,ano,desc(id_municipio))
+saveRDS(between_cities_wind, here("raw","jobs_between_municipalities_wind.RDS"))
+
+between_cities_wind<-read_rds(here("raw","jobs_between_municipalities_wind.RDS"))
+between_cities_wind <- type.convert(between_cities_wind, as.is = TRUE)
+
+
+#Counting jobs that take place in the municipality but are registered elsewhere
+jobs_from_outside_wind<-between_cities_wind%>%
+  filter(id_municipio!=id_municipio_trabalho & !is.na(id_municipio_trabalho))%>%
+           group_by(id_municipio_trabalho, ano)%>%
+           summarise(wind_jobs_from_outside3112=sum(total_jobs_3112))  
+
+#merge with total outside jobs to differentiate between years where reporting is simply inexistent and sector-specific NAs (no jobs in these sectors, hence can be replaced with zeros)
+jobs_from_outside<-jobs_from_outside%>% left_join(jobs_from_outside_wind, by=c("id_municipio_trabalho","ano"))
+jobs_from_outside$wind_jobs_from_outside3112[is.na(jobs_from_outside$wind_jobs_from_outside3112) & 
+                                                !is.na(jobs_from_outside$jobs_from_outside3112)]<-0
+
+saveRDS(jobs_from_outside, here("raw","jobs_from_outside.RDS"))
+```
+
+
+5. Annual sector-specific by employment category
+```{r}
+#load solar and wind code and separate into 3 categories: component production, installation and O&M
+wind_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet = "wind_related cnae")
+solar_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet ="solar_related_CNAE_")
+
+# extract CNPJs as a vector
+wind_om <- wind_codes$cnae[wind_codes$phase=="operations"]
+wind_inst <- wind_codes$cnae[wind_codes$phase=="installation"]
+wind_comp <- wind_codes$cnae[wind_codes$phase=="components"]
+solar_om <- solar_codes$cnae[solar_codes$phase=="operations"]
+solar_inst <- solar_codes$cnae[solar_codes$phase=="installation"]
+solar_comp <- solar_codes$cnae[solar_codes$phase=="components"]
+
+# convert vector to a string of comma-separated values
+wind_om <-
+  paste0("'", gsub("'", "\\'", wind_om), "'", collapse = ",")
+wind_inst <-
+  paste0("'", gsub("'", "\\'", wind_inst), "'", collapse = ",")
+wind_comp <-
+  paste0("'", gsub("'", "\\'", wind_comp), "'", collapse = ",")
+solar_om <-
+  paste0("'", gsub("'", "\\'", solar_om), "'", collapse = ",")
+solar_inst <-
+  paste0("'", gsub("'", "\\'", solar_inst), "'", collapse = ",")
+
+solar_comp <-
+  paste0("'", gsub("'", "\\'", solar_comp), "'", collapse = ",")
+
+set_billing_id("")
+
+wind_component<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, tipo_vinculo, SUM(CAST(vinculo_ativo_3112 AS INT64)) as wind_component_jobs_3112,
+COUNT(vinculo_ativo_3112) as wind_component_jobs
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano >2005 and cnae_2_subclasse IN (", wind_comp,")
+GROUP BY id_municipio, ano, tipo_vinculo"))
+
+
+wind_installation<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, tipo_vinculo,
+SUM(CAST(vinculo_ativo_3112 AS INT64)) as wind_installation_jobs_3112
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano >2005 AND cnae_2_subclasse IN(",wind_inst,")
+GROUP BY id_municipio, ano, tipo_vinculo"))
+
+
+wind_om_data<-basedosdados::read_sql(query=paste("SELECT  id_municipio, ano, SUM(CAST(vinculo_ativo_3112 AS INT64)) as wind_om_jobs_3112,
+COUNT(vinculo_ativo_3112) as wind_om_jobs,  
+tipo_vinculo,
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano >2005 and cnae_2_subclasse in (",wind_om,")
+GROUP BY id_municipio, ano, tipo_vinculo"))
+
+set_billing_id("")
+
+
+solar_component<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, SUM(CAST(vinculo_ativo_3112 AS INT64)) as solar_component_jobs_3112,
+COUNT(vinculo_ativo_3112) as solar_component_jobs,  
+tipo_vinculo,
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano >2005 and cnae_2_subclasse in(",solar_comp,")
+GROUP BY id_municipio, ano, tipo_vinculo"))
+
+solar_installation<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, SUM(CAST(vinculo_ativo_3112 AS INT64)) as solar_installation_jobs_3112,
+COUNT(vinculo_ativo_3112) as solar_installation_jobs,  
+tipo_vinculo,
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano >2005 and cnae_2_subclasse in (",solar_inst,")
+GROUP BY id_municipio, ano, tipo_vinculo"))
+
+solar_om_data<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, SUM(CAST(vinculo_ativo_3112 AS INT64)) as solar_om_jobs_3112,
+COUNT(vinculo_ativo_3112) as solar_om_jobs,  
+tipo_vinculo,
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano >2005 and cnae_2_subclasse in (",solar_om,") 
+GROUP BY id_municipio, ano, tipo_vinculo"))
+
+
+
+full_join<-full_join(wind_component, wind_installation, by=c("ano","id_municipio","tipo_vinculo"))%>%
+  full_join(wind_om_data, by=c("ano","id_municipio","tipo_vinculo"))%>%
+    full_join(solar_component, by=c("ano","id_municipio","tipo_vinculo"))%>%
+    full_join(solar_installation, by=c("ano","id_municipio","tipo_vinculo"))%>%
+  full_join(solar_om_data, by=c("ano","id_municipio","tipo_vinculo"))
+
+full_join <- type.convert(full_join, as.is = TRUE)
+
+saveRDS(full_join,here("raw","rais_cnae_vinculo.RDS"))
+  
+links<-full_join%>%group_by(ano, id_municipio)%>%
+  mutate(wind_component_jobs_3112_total=sum(wind_component_jobs_3112, na.rm = TRUE))%>%
+  mutate(wind_installation_jobs_3112_total=sum(wind_installation_jobs_3112, na.rm = TRUE))%>%
+  mutate(wind_om_jobs_3112_total=sum(wind_om_jobs_3112,na.rm = TRUE))%>%
+  mutate(solar_installation_jobs_3112_total=sum(solar_installation_jobs_3112,na.rm=TRUE))%>%
+  mutate(solar_component_jobs_3112_total=sum(solar_component_jobs_3112,na.rm = TRUE))%>%
+  mutate(solar_om_jobs_3112_total=sum(solar_om_jobs_3112, na.rm = TRUE))%>%select(ano,id_municipio,ends_with("_total"))%>%distinct()%>%
+  arrange(id_municipio,ano)
+
+temp<-full_join%>%filter(tipo_vinculo=="50")%>%
+  group_by(ano, id_municipio)%>%
+  mutate(wind_component_jobs_3112_temp=sum(wind_component_jobs_3112, na.rm = TRUE))%>%
+  mutate(wind_installation_jobs_3112_temp=sum(wind_installation_jobs_3112, na.rm = TRUE))%>%
+  mutate(wind_om_jobs_3112_temp=sum(wind_om_jobs_3112,na.rm = TRUE))%>%
+  mutate(solar_installation_jobs_3112_temp=sum(solar_installation_jobs_3112,na.rm=TRUE))%>%
+  mutate(solar_component_jobs_3112_temp=sum(solar_component_jobs_3112,na.rm = TRUE))%>%
+  mutate(solar_om_jobs_3112_temp=sum(solar_om_jobs_3112, na.rm = TRUE))%>%select(ano,id_municipio,ends_with("_temp"))%>%distinct()%>%
+  arrange(id_municipio,ano)
+
+clt_det<-full_join%>%filter(tipo_vinculo %in% c("60","65","70","75","90","95","96","97"))%>%
+  group_by(ano, id_municipio)%>%
+  mutate(wind_component_jobs_3112_clt_det=sum(wind_component_jobs_3112, na.rm = TRUE))%>%
+  mutate(wind_installation_jobs_3112_clt_det=sum(wind_installation_jobs_3112, na.rm = TRUE))%>%
+  mutate(wind_om_jobs_3112_clt_det=sum(wind_om_jobs_3112,na.rm = TRUE))%>%
+  mutate(solar_installation_jobs_3112_clt_det=sum(solar_installation_jobs_3112,na.rm=TRUE))%>%
+  mutate(solar_component_jobs_3112_clt_det=sum(solar_component_jobs_3112,na.rm = TRUE))%>%
+  mutate(solar_om_jobs_3112_clt_det=sum(solar_om_jobs_3112, na.rm = TRUE))%>%select(ano,id_municipio,ends_with("_clt_det"))%>%distinct()%>%
+  arrange(id_municipio,ano)
+
+
+clt_ind<-full_join%>%filter(tipo_vinculo %in% c("10","15","20","25"))%>%
+  group_by(ano, id_municipio)%>%
+  mutate(wind_component_jobs_3112_clt_ind=sum(wind_component_jobs_3112, na.rm = TRUE))%>%
+  mutate(wind_installation_jobs_3112_clt_ind=sum(wind_installation_jobs_3112, na.rm = TRUE))%>%
+  mutate(wind_om_jobs_3112_clt_ind=sum(wind_om_jobs_3112,na.rm = TRUE))%>%
+  mutate(solar_installation_jobs_3112_clt_ind=sum(solar_installation_jobs_3112,na.rm=TRUE))%>%
+  mutate(solar_component_jobs_3112_clt_ind=sum(solar_component_jobs_3112,na.rm = TRUE))%>%
+  mutate(solar_om_jobs_3112_clt_ind=sum(solar_om_jobs_3112, na.rm = TRUE))%>%select(ano,id_municipio,ends_with("_clt_ind"))%>%distinct()%>%
+  arrange(id_municipio,ano)
+
+
+rais_cnae_annual<-left_join(links,temp, by=c("ano","id_municipio"))%>%
+  left_join(clt_det, by=c("ano","id_municipio"))%>%
+  left_join(clt_ind, by=c("ano", "id_municipio"))
+
+saveRDS(rais_cnae_annual,here("intermediate","rais_cnae_annual.RDS"))
+```
+
+6. Monthly RAIS data (net additions and layoffs) for all jobs
+```{r}
+set_billing_id("")
+
+monthly_rais_additions<-basedosdados::read_sql(query="SELECT id_municipio, ano, tipo_vinculo, mes_admissao as month, COUNT(mes_admissao) as monthly_addition  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2001 and 2022 and mes_admissao IS NOT NULL
+GROUP BY id_municipio, ano, mes_admissao, tipo_vinculo")
+
+
+monthly_rais_subtraction<-basedosdados::read_sql(query="SELECT id_municipio, ano, tipo_vinculo, mes_desligamento as month, COUNT(mes_desligamento) as monthly_layoffs  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2001 and 2022  and mes_desligamento IS NOT NULL
+GROUP BY id_municipio, ano, mes_desligamento, tipo_vinculo")
+
+#adapt variable classes to R-friendly classes
+monthly_rais_additions <- type.convert(monthly_rais_additions, as.is = TRUE) 
+monthly_rais_subtraction <- type.convert(monthly_rais_subtraction, as.is = TRUE) 
+
+net<-full_join(monthly_rais_additions, monthly_rais_subtraction, by=c("id_municipio","month","ano","tipo_vinculo"))
+net<-net%>%arrange(id_municipio, ano, month, tipo_vinculo)
+
+#Expand to all month, year, municipality combinations
+all_years<-net%>%expand(id_municipio, month, ano, tipo_vinculo)
+#left_join to fully expanded set
+all_years<-all_years%>%left_join(net, by=c("id_municipio","month","ano","tipo_vinculo"))
+
+#replace NAs with zeros
+all_years$monthly_addition[is.na(all_years$monthly_addition)]<-0
+all_years$monthly_layoffs[is.na(all_years$monthly_layoffs)]<-0
+
+
+all_years<-all_years%>%mutate(net_additions=monthly_addition-monthly_layoffs)
+all_years<-all_years%>%arrange(id_municipio,ano, month, tipo_vinculo)
+#save
+saveRDS(all_years,here("raw","RAIS_monthly_netadditions.RDS"))
+```
+
+6. Monthly RAIS data (net additions and layoffs) for sector jobs
+```{r}
+set_billing_id("")
+#monthly admission/layoffs for wind components by type of link
+wind_comp_add<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, tipo_vinculo, mes_admissao as month, COUNT(mes_admissao) as add_wind_comp
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_admissao IS NOT NULL  and cnae_2_subclasse in (", wind_comp,")
+GROUP BY id_municipio, ano, mes_admissao, tipo_vinculo"))
+
+
+wind_comp_subs<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano,tipo_vinculo, mes_desligamento as month, COUNT(mes_desligamento) as sub_wind_comp  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022  and mes_desligamento IS NOT NULL and cnae_2_subclasse in 
+(", wind_comp,")
+GROUP BY id_municipio, ano, mes_desligamento, tipo_vinculo"))
+
+#monthly admission/layoffs for wind installation by type of link
+
+wind_inst_add<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, tipo_vinculo, mes_admissao as month, COUNT(mes_admissao) as add_wind_inst
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_admissao IS NOT NULL  and cnae_2_subclasse in 
+ (", wind_inst,")
+GROUP BY id_municipio, ano, mes_admissao, tipo_vinculo"))
+
+set_billing_id("")
+
+wind_inst_subs<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano,tipo_vinculo, mes_desligamento as month, COUNT(mes_desligamento) as sub_wind_inst  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022  and mes_desligamento IS NOT NULL and cnae_2_subclasse in 
+ (", wind_inst,")
+GROUP BY id_municipio, ano, mes_desligamento, tipo_vinculo"))
+
+#wind O&M monthly
+wind_om_add<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, tipo_vinculo, mes_admissao as month, COUNT(mes_admissao) as add_wind_om
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_admissao IS NOT NULL  and cnae_2_subclasse in 
+ (", wind_om,")
+GROUP BY id_municipio, ano, mes_admissao, tipo_vinculo"))
+
+
+wind_om_subs<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano,tipo_vinculo, mes_desligamento as month, COUNT(mes_desligamento) as sub_wind_om  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022  and mes_desligamento IS NOT NULL and cnae_2_subclasse in 
+(", wind_om,")
+GROUP BY id_municipio, ano, mes_desligamento, tipo_vinculo"))
+
+set_billing_id("")
+
+
+#monthly admission/layoffs for solar components by type of link
+
+solar_comp_add<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, tipo_vinculo, mes_admissao as month, COUNT(mes_admissao) as add_solar_comp
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_admissao IS NOT NULL  and cnae_2_subclasse in 
+(", solar_comp,")
+GROUP BY id_municipio, ano, mes_admissao, tipo_vinculo"))
+
+
+solar_comp_subs<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano,tipo_vinculo, mes_desligamento as month, COUNT(mes_desligamento) as sub_solar_comp  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022  and mes_desligamento IS NOT NULL and cnae_2_subclasse in (", solar_comp,")
+
+GROUP BY id_municipio, ano, mes_desligamento, tipo_vinculo"))
+
+
+#monthly admission/layoffs for solar installation by type of link
+solar_inst_add<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, tipo_vinculo, mes_admissao as month, COUNT(mes_admissao) as add_solar_inst
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_admissao IS NOT NULL  and cnae_2_subclasse in 
+ (", solar_inst,")
+GROUP BY id_municipio, ano, mes_admissao, tipo_vinculo"))
+
+set_billing_id("")
+
+
+
+solar_inst_subs<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano,tipo_vinculo, mes_desligamento as month, COUNT(mes_desligamento) as sub_solar_inst  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022  and mes_desligamento IS NOT NULL and cnae_2_subclasse in 
+ (", solar_inst,")
+
+GROUP BY id_municipio, ano, mes_desligamento, tipo_vinculo"))
+
+#solar O&M monthly
+solar_om_add<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, tipo_vinculo, mes_admissao as month, COUNT(mes_admissao) as add_solar_om
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_admissao IS NOT NULL  and cnae_2_subclasse in 
+ (", solar_om,")
+GROUP BY id_municipio, ano, mes_admissao, tipo_vinculo"))
+
+
+solar_om_subs<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano,tipo_vinculo, mes_desligamento as month, COUNT(mes_desligamento) as sub_solar_om  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022  and mes_desligamento IS NOT NULL and cnae_2_subclasse in 
+ (", solar_om,")
+GROUP BY id_municipio, ano, mes_desligamento, tipo_vinculo"))
+
+
+#adapt variable classes to R-friendly classes
+solar_comp_add <- type.convert(solar_comp_add, as.is = TRUE) 
+solar_comp_subs <- type.convert(solar_comp_subs, as.is = TRUE) 
+solar_inst_add <- type.convert(solar_inst_add, as.is = TRUE) 
+solar_inst_subs <- type.convert(solar_inst_subs, as.is = TRUE) 
+solar_om_add <- type.convert(solar_om_add, as.is = TRUE) 
+solar_om_subs <- type.convert(solar_om_subs, as.is = TRUE) 
+
+wind_comp_add <- type.convert(wind_comp_add, as.is = TRUE) 
+wind_comp_subs <- type.convert(wind_comp_subs, as.is = TRUE) 
+wind_inst_add <- type.convert(wind_inst_add, as.is = TRUE) 
+wind_inst_subs <- type.convert(wind_inst_subs, as.is = TRUE) 
+wind_om_add <- type.convert(wind_om_add, as.is = TRUE) 
+wind_om_subs <- type.convert(wind_om_subs, as.is = TRUE)
+
+net<-full_join(solar_comp_add, solar_comp_subs, by=c("id_municipio","month","ano", "tipo_vinculo"))%>%
+  full_join(solar_inst_add, by=c("id_municipio","month","ano", "tipo_vinculo"))%>%
+  full_join(solar_inst_subs, by=c("id_municipio","month","ano", "tipo_vinculo"))%>%
+  full_join(solar_om_add, by=c("id_municipio","month","ano", "tipo_vinculo"))%>%
+  full_join(solar_om_subs, by=c("id_municipio","month","ano", "tipo_vinculo"))%>%
+  full_join(wind_comp_add, by=c("id_municipio","month","ano", "tipo_vinculo"))%>%
+  full_join(wind_comp_subs, by=c("id_municipio","month","ano", "tipo_vinculo"))%>%
+  full_join(wind_inst_add, by=c("id_municipio","month","ano", "tipo_vinculo"))%>%
+  full_join(wind_inst_subs, by=c("id_municipio","month","ano", "tipo_vinculo"))%>%
+  full_join(wind_om_add, by=c("id_municipio","month","ano", "tipo_vinculo"))%>%
+  full_join(wind_om_subs, by=c("id_municipio","month","ano", "tipo_vinculo"))
+
+net<-net%>%arrange(id_municipio, ano, month)
+#Expand to all month, year, municipality combinations
+all_years<-net%>%expand(id_municipio, month, ano)
+
+#left_join to fully expanded set
+all_years<-all_years%>%left_join(net, by=c("id_municipio","month","ano"))
+
+
+#replace all NAs with zeros (rows where tipo_vinculo =0 are months where the municipality did not have any changes in any of the CNAE categories)
+all_years[is.na(all_years)]<-0
+
+all_years<-all_years%>%
+  mutate(solar_comp_net=add_solar_comp-sub_solar_comp)%>%
+  mutate(solar_inst_net=add_solar_inst-sub_solar_inst)%>%
+  mutate(solar_om_net=add_solar_om-sub_solar_om)%>%
+  mutate(wind_comp_net=add_wind_comp-sub_wind_comp)%>%
+  mutate(wind_inst_net=add_wind_inst-sub_wind_inst)%>%
+  mutate(wind_om_net=add_wind_om-sub_wind_om)
+
+
+all_years<-all_years%>%arrange(id_municipio,ano, month)
+#save
+saveRDS(all_years,here("intermediate","RAIS_monthly_netadditions_cnae.RDS"))
+```
+
+
+7. monthly RAIS data for education level
+```{r}
+#jobs by type of education
+education_monthly_add<-basedosdados::read_sql(query="SELECT id_municipio, ano, grau_instrucao_apos_2005, mes_admissao as month, COUNT(mes_admissao) as monthly_addition  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_admissao IS NOT NULL
+GROUP BY id_municipio, ano, mes_admissao, grau_instrucao_apos_2005")
+
+education_monthly_sub<-basedosdados::read_sql(query="SELECT id_municipio, ano, grau_instrucao_apos_2005, mes_desligamento as month, COUNT(mes_desligamento) as monthly_layoffs  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_desligamento IS NOT NULL
+GROUP BY id_municipio, ano, mes_desligamento, grau_instrucao_apos_2005")
+
+education_monthly_add <- type.convert(education_monthly_add, as.is = TRUE) 
+education_monthly_sub <- type.convert(education_monthly_sub, as.is = TRUE) 
+
+net<-full_join(education_monthly_add, education_monthly_sub, by=c("id_municipio","month","ano","grau_instrucao_apos_2005"))
+net<-net%>%arrange(id_municipio, ano, month, grau_instrucao_apos_2005)
+
+#Expand to all month, year, municipality combinations
+all_years<-net%>%expand(id_municipio, month, ano, grau_instrucao_apos_2005)
+#left_join to fully expanded set
+all_years<-all_years%>%left_join(net, by=c("id_municipio","month","ano","grau_instrucao_apos_2005"))
+
+#replace NAs with zeros
+all_years$monthly_addition[is.na(all_years$monthly_addition)]<-0
+all_years$monthly_layoffs[is.na(all_years$monthly_layoffs)]<-0
+
+
+all_years<-all_years%>%mutate(net_additions=monthly_addition-monthly_layoffs)
+all_years<-all_years%>%arrange(id_municipio,ano, month, grau_instrucao_apos_2005)
+#save
+saveRDS(all_years,here("raw","RAIS_monthly_education.RDS"))
+
+rm(list=setdiff(ls(), c("solar_codes", "wind_codes","solar_all", "wind_all", "%notin%")))
+
+#REPEAT FOR WIND SPECIFIC JOBS
+#jobs by type of education
+
+education_monthly_add<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, grau_instrucao_apos_2005, mes_admissao as month, COUNT(mes_admissao) as monthly_addition  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_admissao IS NOT NULL and cnae_2_subclasse in (", wind_all, ")
+GROUP BY id_municipio, ano, mes_admissao, grau_instrucao_apos_2005"))
+
+education_monthly_sub<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, grau_instrucao_apos_2005, mes_desligamento as month, COUNT(mes_desligamento) as monthly_layoffs  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_desligamento IS NOT NULL and cnae_2_subclasse in (", wind_all, ")
+GROUP BY id_municipio, ano, mes_desligamento, grau_instrucao_apos_2005"))
+
+education_monthly_add <- type.convert(education_monthly_add, as.is = TRUE) 
+education_monthly_sub <- type.convert(education_monthly_sub, as.is = TRUE) 
+
+net<-full_join(education_monthly_add, education_monthly_sub, by=c("id_municipio","month","ano","grau_instrucao_apos_2005"))
+net<-net%>%arrange(id_municipio, ano, month, grau_instrucao_apos_2005)
+
+#Expand to all month, year, municipality combinations
+all_years<-net%>%expand(id_municipio, month, ano, grau_instrucao_apos_2005)
+#left_join to fully expanded set
+all_years<-all_years%>%left_join(net, by=c("id_municipio","month","ano","grau_instrucao_apos_2005"))
+
+#replace NAs with zeros
+all_years$monthly_addition[is.na(all_years$monthly_addition)]<-0
+all_years$monthly_layoffs[is.na(all_years$monthly_layoffs)]<-0
+
+
+all_years<-all_years%>%mutate(net_additions=monthly_addition-monthly_layoffs)
+all_years<-all_years%>%arrange(id_municipio,ano, month, grau_instrucao_apos_2005)
+#save
+saveRDS(all_years,here("raw","RAIS_monthly_education_wind.RDS"))
+
+rm(list=setdiff(ls(), c("solar_codes", "wind_codes","solar_all", "wind_all", "%notin%")))
+
+#REPEAT FOR SOLAR SPECIFIC JOBS
+set_billing_id("")
+#jobs by type of education
+education_monthly_add<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, grau_instrucao_apos_2005, mes_admissao as month, COUNT(mes_admissao) as monthly_addition  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_admissao IS NOT NULL and cnae_2_subclasse in (", solar_all, ")
+GROUP BY id_municipio, ano, mes_admissao, grau_instrucao_apos_2005"))
+
+education_monthly_sub<-basedosdados::read_sql(query=paste("SELECT id_municipio, ano, grau_instrucao_apos_2005, mes_desligamento as month, COUNT(mes_desligamento) as monthly_layoffs  
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2007 and 2022 and mes_desligamento IS NOT NULL and cnae_2_subclasse in (", solar_all, ")
+GROUP BY id_municipio, ano, mes_desligamento, grau_instrucao_apos_2005"))
+
+education_monthly_add <- type.convert(education_monthly_add, as.is = TRUE) 
+education_monthly_sub <- type.convert(education_monthly_sub, as.is = TRUE) 
+
+net<-full_join(education_monthly_add, education_monthly_sub, by=c("id_municipio","month","ano","grau_instrucao_apos_2005"))
+net<-net%>%arrange(id_municipio, ano, month, grau_instrucao_apos_2005)
+
+#Expand to all month, year, municipality combinations
+all_years<-net%>%expand(id_municipio, month, ano, grau_instrucao_apos_2005)
+#left_join to fully expanded set
+all_years<-all_years%>%left_join(net, by=c("id_municipio","month","ano","grau_instrucao_apos_2005"))
+
+#replace NAs with zeros
+all_years$monthly_addition[is.na(all_years$monthly_addition)]<-0
+all_years$monthly_layoffs[is.na(all_years$monthly_layoffs)]<-0
+
+
+all_years<-all_years%>%mutate(net_additions=monthly_addition-monthly_layoffs)
+all_years<-all_years%>%arrange(id_municipio,ano, month, grau_instrucao_apos_2005)
+#save
+saveRDS(all_years,here("raw","RAIS_monthly_education_solar.RDS"))
+
+rm(list = ls())
+```
+
+8. Get monthly wages
+```{r}
+wages_monthly<-basedosdados::read_sql(query="SELECT ano,id_municipio, COUNT(vinculo_ativo_3112) as no_workers, AVG(valor_remuneracao_media) as avg_wage, mes_admissao, mes_desligamento,
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+where ano between 2007 and 2022 and valor_remuneracao_media>0
+                                          GROUP BY id_municipio, ano, mes_admissao, mes_desligamento")
+saveRDS(wages_monthly,here("raw","monthly_wages_no_sector.RDS"))
+
+
+#solar sector wages
+#load solar and wind code and separate into 3 categories: component production, installation and O&M
+wind_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet = "wind_related cnae")
+solar_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet ="solar_related_CNAE_")
+
+# extract CNPJs as a vector
+wind_cnae <- wind_codes$cnae
+solar_cnae<-solar_codes$cnae
+
+
+# convert vector to a string of comma-separated values
+wind_cnae2 <-paste0("'", gsub("'", "\\'", wind_cnae), "'", collapse = ",")
+solar_cnae2 <-paste0("'", gsub("'", "\\'", solar_cnae), "'", collapse = ",")
+query_wind = paste("SELECT ano,id_municipio, COUNT(vinculo_ativo_3112) as no_workers, AVG(valor_remuneracao_media) as avg_wage, mes_admissao, mes_desligamento FROM `basedosdados.br_me_rais.microdados_vinculos`
+where ano between 2007 and 2022 and valor_remuneracao_media>0 and cnae_2_subclasse in (", wind_cnae2, ") GROUP BY id_municipio, ano, mes_admissao, mes_desligamento")
+  wind_wages <-basedosdados::read_sql( query_wind )
+  
+saveRDS(wind_wages,here("raw","monthly_wages_wind.RDS"))
+
+query_solar = paste("SELECT ano,id_municipio, COUNT(vinculo_ativo_3112) as no_workers, AVG(valor_remuneracao_media) as avg_wage, mes_admissao, mes_desligamento FROM `basedosdados.br_me_rais.microdados_vinculos`
+where ano between 2007 and 2022 and valor_remuneracao_media>0 and cnae_2_subclasse in (", solar_cnae2, ") GROUP BY id_municipio, ano, mes_admissao, mes_desligamento")
+solar_wages <-basedosdados::read_sql( query_solar )
+  
+saveRDS(solar_wages,here("raw","monthly_wages_solar.RDS"))
+```
+
+8. get data on occupational codes
+```{r}
+query_cbo<-paste("SELECT ano,id_municipio, COUNT(vinculo_ativo_3112) as no_workers, cbo_2002 , mes_admissao, mes_desligamento
+FROM `basedosdados.br_me_rais.microdados_vinculos` WHERE ano between 2007 and 2022 
+GROUP BY id_municipio, ano, mes_admissao, mes_desligamento, cbo_2002")
+
+cbo_monthly<-basedosdados::read_sql( query_cbo )
+
+saveRDS(cbo_monthly,here("raw","monthly_cbo_no_sector.RDS"))
+
+
+#solar sector cbo
+#load solar and wind code and separate into 3 categories: component production, installation and O&M
+wind_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet = "wind_related cnae")
+solar_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet ="solar_related_CNAE_")
+
+# extract CNPJs as a vector
+wind_cnae <- wind_codes$cnae
+solar_cnae<-solar_codes$cnae
+
+
+# convert vector to a string of comma-separated values
+wind_cnae2 <-paste0("'", gsub("'", "\\'", wind_cnae), "'", collapse = ",")
+solar_cnae2 <-paste0("'", gsub("'", "\\'", solar_cnae), "'", collapse = ",")
+query_wind = paste("SELECT ano,id_municipio, COUNT(vinculo_ativo_3112) as no_workers, cbo_2002 , mes_admissao, mes_desligamento
+FROM `basedosdados.br_me_rais.microdados_vinculos`
+where ano between 2007 and 2022 and cnae_2_subclasse in (", wind_cnae2, ") GROUP BY id_municipio, ano, mes_admissao, mes_desligamento, cbo_2002")
+ 
+ wind_cbo <-basedosdados::read_sql( query_wind )
+  
+saveRDS(wind_cbo,here("raw","monthly_cbo_wind.RDS"))
+
+query_solar = paste("SELECT ano,id_municipio, COUNT(vinculo_ativo_3112) as no_workers, cbo_2002 , mes_admissao, mes_desligamento FROM `basedosdados.br_me_rais.microdados_vinculos`
+where ano between 2007 and 2022 and cnae_2_subclasse in (", solar_cnae2, ") GROUP BY id_municipio, ano, mes_admissao, mes_desligamento, cbo_2002")
+solar_cbo <-basedosdados::read_sql( query_solar )
+  
+saveRDS(solar_cbo,here("raw","monthly_cbo_solar.RDS"))
+```
+
+
+
+8. Monthly outside jobs
+```{r}
+set_billing_id("")
+
+#monthly admission/layoffs for solar installation by type of link
+total_outside_add<-basedosdados::read_sql(query=paste("SELECT id_municipio,id_municipio_trabalho,  ano, mes_admissao as month, COUNT(mes_admissao) as add_total_outside
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2006 and 2022 and mes_admissao IS NOT NULL
+GROUP BY id_municipio,id_municipio_trabalho, ano, mes_admissao"))
+
+total_outside_add<-total_outside_add%>%
+  filter(id_municipio!=id_municipio_trabalho & !is.na(id_municipio_trabalho))%>%
+  group_by(id_municipio_trabalho, ano, month)%>%
+  summarise(add_total_outside=sum(add_total_outside))
+
+
+total_outside_sub<-basedosdados::read_sql(query=paste("SELECT id_municipio, id_municipio_trabalho, ano, mes_desligamento as month, COUNT(mes_desligamento) as sub_total_outside
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2006 and 2022 and mes_desligamento IS NOT NULL
+GROUP BY id_municipio,id_municipio_trabalho, ano, mes_desligamento"))
+
+total_outside_sub<-total_outside_sub%>%
+  filter(id_municipio!=id_municipio_trabalho & !is.na(id_municipio_trabalho))%>%
+  group_by(id_municipio_trabalho, ano, month)%>%
+  summarise(sub_total_outside=sum(sub_total_outside))
+
+total_outside_add <- type.convert(total_outside_add, as.is = TRUE) 
+total_outside_sub <- type.convert(total_outside_sub, as.is = TRUE) 
+
+outside_monthly<- full_join(total_outside_add, total_outside_sub, by=c("id_municipio_trabalho", "month", "ano"))
+
+outside_monthly$add_total_outside[is.na(outside_monthly$add_total_outside)]<-0
+outside_monthly$sub_total_outside[is.na(outside_monthly$sub_total_outside)]<-0
+
+outside_monthly<- outside_monthly%>%
+  mutate(net_add_outside=add_total_outside-sub_total_outside)
+#save net additions
+saveRDS(outside_monthly, here("raw","net_additions_outside.RDS"))
+```
+
+8. Monthly outside jobs-solar
+```{r}
+set_billing_id("")
+
+wind_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet = "wind_related cnae")
+solar_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet ="solar_related_CNAE_")
+
+solar_all<- solar_codes$cnae
+solar_all <-
+  paste0("'", gsub("'", "\\'", solar_all), "'", collapse = ",")
+
+
+#monthly admission/layoffs for solar installation by type of link
+total_outside_add<-basedosdados::read_sql(query=paste("SELECT id_municipio,id_municipio_trabalho,  ano, mes_admissao as month, COUNT(mes_admissao) as add_total_outside
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2006 and 2022 and mes_admissao IS NOT NULL and cnae_2_subclasse in (",solar_all,")
+GROUP BY id_municipio,id_municipio_trabalho, ano, mes_admissao"))
+
+total_outside_add<-total_outside_add%>%
+  filter(id_municipio!=id_municipio_trabalho & !is.na(id_municipio_trabalho))%>%
+  group_by(id_municipio_trabalho, ano, month)%>%
+  summarise(add_total_outside=sum(add_total_outside))
+
+
+total_outside_sub<-basedosdados::read_sql(query=paste("SELECT id_municipio, id_municipio_trabalho, ano, mes_desligamento as month, COUNT(mes_desligamento) as sub_total_outside
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2006 and 2022 and mes_desligamento IS NOT NULL  and cnae_2_subclasse in (",solar_all,")
+GROUP BY id_municipio,id_municipio_trabalho, ano, mes_desligamento"))
+
+total_outside_sub<-total_outside_sub%>%
+  filter(id_municipio!=id_municipio_trabalho & !is.na(id_municipio_trabalho))%>%
+  group_by(id_municipio_trabalho, ano, month)%>%
+  summarise(sub_total_outside=sum(sub_total_outside))
+
+total_outside_add <- type.convert(total_outside_add, as.is = TRUE) 
+total_outside_sub <- type.convert(total_outside_sub, as.is = TRUE) 
+
+outside_monthly<- full_join(total_outside_add, total_outside_sub, by=c("id_municipio_trabalho", "month", "ano"))
+
+outside_monthly$add_total_outside[is.na(outside_monthly$add_total_outside)]<-0
+outside_monthly$sub_total_outside[is.na(outside_monthly$sub_total_outside)]<-0
+
+outside_monthly<- outside_monthly%>%
+  mutate(net_add_outside_solar=add_total_outside-sub_total_outside)%>%select(-add_total_outside,-sub_total_outside)
+#save net additions
+saveRDS(outside_monthly, here("raw","net_additions_outside_solar.RDS"))
+```
+
+
+8. Monthly outside jobs-wind
+```{r}
+set_billing_id("")
+
+wind_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet = "wind_related cnae")
+solar_codes<-read_excel(here("raw", "wind_solar_cnae.xlsx"), sheet ="solar_related_CNAE_")
+
+wind_all<- wind_codes$cnae
+wind_all <-
+  paste0("'", gsub("'", "\\'", wind_all), "'", collapse = ",")
+
+
+#monthly admission/layoffs for wind installation by type of link
+total_outside_add<-basedosdados::read_sql(query=paste("SELECT id_municipio,id_municipio_trabalho,  ano, mes_admissao as month, COUNT(mes_admissao) as add_total_outside
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2006 and 2022 and mes_admissao IS NOT NULL and cnae_2_subclasse in (",wind_all,")
+GROUP BY id_municipio,id_municipio_trabalho, ano, mes_admissao"))
+
+total_outside_add<-total_outside_add%>%
+  filter(id_municipio!=id_municipio_trabalho & !is.na(id_municipio_trabalho))%>%
+  group_by(id_municipio_trabalho, ano, month)%>%
+  summarise(add_total_outside=sum(add_total_outside))
+
+
+total_outside_sub<-basedosdados::read_sql(query=paste("SELECT id_municipio, id_municipio_trabalho, ano, mes_desligamento as month, COUNT(mes_desligamento) as sub_total_outside
+FROM `basedosdados.br_me_rais.microdados_vinculos` 
+where ano between 2006 and 2022 and mes_desligamento IS NOT NULL  and cnae_2_subclasse in (",wind_all,")
+GROUP BY id_municipio,id_municipio_trabalho, ano, mes_desligamento"))
+
+total_outside_sub<-total_outside_sub%>%
+  filter(id_municipio!=id_municipio_trabalho & !is.na(id_municipio_trabalho))%>%
+  group_by(id_municipio_trabalho, ano, month)%>%
+  summarise(sub_total_outside=sum(sub_total_outside))
+
+total_outside_add <- type.convert(total_outside_add, as.is = TRUE) 
+total_outside_sub <- type.convert(total_outside_sub, as.is = TRUE) 
+
+outside_monthly<- full_join(total_outside_add, total_outside_sub, by=c("id_municipio_trabalho", "month", "ano"))
+
+outside_monthly$add_total_outside[is.na(outside_monthly$add_total_outside)]<-0
+outside_monthly$sub_total_outside[is.na(outside_monthly$sub_total_outside)]<-0
+
+outside_monthly<- outside_monthly%>%
+  mutate(net_add_outside_wind=add_total_outside-sub_total_outside)%>%select(-add_total_outside,-sub_total_outside)
+#save net additions
+saveRDS(outside_monthly, here("raw","net_additions_outside_wind.RDS"))
+```
+
+
+9. Checks of some municipios with missing data
+```{r}
+missing_data<-basedosdados::read_sql(query="SELECT id_municipio, ano, SUM(CAST(vinculo_ativo_3112 AS INT64)) as total_jobs_3112
+FROM `basedosdados.br_me_rais.microdados_vinculos`  
+WHERE ano BETWEEN 2006 and 2011 and id_municipio IN('2101731', '2111672', '2206720')
+GROUP BY id_municipio, ano") 
+```
+
+10. load annual series for manufacturing sector codes (2710401 for wind and 2790299 and 2610800)
+```{r}
+set_billing_id("")
+turbine_manufacturers<-basedosdados::read_sql(query="SELECT ano, SUM(quantidade_vinculos_ativos) as total_jobs, COUNT(quantidade_vinculos_ativos) as no_establishments
+FROM `basedosdados.br_me_rais.microdados_estabelecimentos`  
+WHERE ano BETWEEN 2006 AND 2022 and cnae_2_subclasse = '2710401' and indicador_rais_negativa=0
+GROUP BY ano") 
+
+all_jobs<-basedosdados::read_sql(query="SELECT ano, SUM(quantidade_vinculos_ativos) as total_jobs, COUNT(quantidade_vinculos_ativos) as no_establishments
+FROM `basedosdados.br_me_rais.microdados_estabelecimentos`  
+WHERE ano BETWEEN 2006 AND 2022 and indicador_rais_negativa=0
+GROUP BY ano") 
+
+turbine_manufacturers <- type.convert(turbine_manufacturers, as.is = TRUE)
+
+all_jobs <- type.convert(all_jobs, as.is = TRUE)
+all_jobs <-all_jobs%>%
+  rename(all_jobs=total_jobs, all_firms= no_establishments)
+
+turbine_manufacturers<-turbine_manufacturers%>%left_join(all_jobs, by=c("ano"))
+turbine_manufacturers<-turbine_manufacturers%>%mutate(share_of_totalfirms=(no_establishments/all_firms)*100, share_jobs=(total_jobs/all_jobs)*100)
+saveRDS(turbine_manufacturers, here("final", "turbine_manufacturers.RDS"))
+```
+

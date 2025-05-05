@@ -1,0 +1,157 @@
+---
+title: "8- merge matching weights"
+output: html_document
+date: "2023-10-13"
+---
+
+```{r setup, include=FALSE}
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","here", "data.table","janitor","zoo","ggrepel","lubridate","MatchIt","table1","t1flex","t1kable","xtable","kableExtra", "geobr","cobalt", 
+                              "ggsn", "twang","RItools","stats","purrr","rlang","fixest","car","haven"))
+
+`%notin%` <- Negate(`%in%`)
+#setFixest_nthreads(nthreads = 4, save=TRUE)
+
+```
+
+import data
+```{r}
+monthly_panel<-readRDS(here("final","monthly_final_noweights.RDS"))
+annual_panel<-readRDS(here("final","annual_panel_final_noweights.RDS"))
+
+solar_weights<-readRDS(here("final","solar_weights_1_to_1.RDS"))
+wind_weights<-readRDS(here("final","wind_weights_1_to_1.RDS"))
+```
+
+1. join weights
+```{r}
+monthly_panel<-monthly_panel%>%
+  left_join(solar_weights, by=c("id_municipio"))%>%
+    left_join(wind_weights, by=c("id_municipio"))
+
+annual_panel<-annual_panel%>%
+  left_join(solar_weights, by=c("id_municipio"))%>%
+    left_join(wind_weights, by=c("id_municipio"))
+
+
+pib<-annual_panel%>%select(id_municipio, ano, pib_clean_constant2020_BRL)
+```
+
+
+3. Solar restrict to 1-to-1 matches and create placebo timing
+```{r}
+#Create the placebo timing for the matched pairs
+# Split the data frame into treated and untreated
+solar_treated_monthly <- monthly_panel %>%
+  filter(solar_treat_postmatch == 1)
+
+solar_untreated_monthly <- monthly_panel %>%
+  filter(solar_treat_postmatch == 0)
+
+# Join the dataframes and copy the t_solar values
+solar_new <- solar_untreated_monthly %>%
+  left_join(solar_treated_monthly[, c("subclass_solar", "month", "ano", "t_solar")], 
+            by = c("subclass_solar", "month", "ano")) %>%
+  mutate(t_solar = ifelse(is.na(t_solar.x), t_solar.y, t_solar.x)) %>%
+  select(-t_solar.x, -t_solar.y)
+
+# Append the untreated rows with updated t_solar and treated rows
+solar_matched_final_monthly <- rbind(solar_new, solar_treated_monthly)
+#panel is balanced-> exactly 192 time period for each of the 62 municipalities
+
+
+#Create the placebo timing for the matched pairs
+# Split the data frame into treated and untreated
+solar_treated_annual <- annual_panel %>%
+  filter(solar_treat_postmatch == 1)
+
+solar_untreated_annual <- annual_panel %>%
+  filter(solar_treat_postmatch == 0)
+
+# Join the dataframes and copy the t_solar values
+solar_new_annual <- solar_untreated_annual %>%
+  left_join(solar_treated_annual[, c("subclass_solar", "ano", "t_solar")], 
+            by = c("subclass_solar", "ano")) %>%
+  mutate(t_solar = ifelse(is.na(t_solar.x), t_solar.y, t_solar.x)) %>%
+  select(-t_solar.x, -t_solar.y)
+
+# Append the untreated rows with updated t_solar and treated rows
+solar_matched_final_annual <- rbind(solar_treated_annual, solar_new_annual)
+#panel is balanced-> exactly 192 time period for each of the 62 municipalities
+
+#REPEAT For wind
+#Create the placebo timing for the matched pairs
+# Split the data frame into treated and untreated
+wind_treated_monthly <- monthly_panel %>%
+  filter(wind_treat_postmatch == 1)
+
+wind_untreated_monthly <- monthly_panel %>%
+  filter(wind_treat_postmatch == 0)
+check<-wind_untreated_monthly%>%distinct(id_municipio,subclass_wind, matched_year_wind)
+
+check2<-wind_treated_monthly%>%distinct(id_municipio,subclass_wind, matched_year_wind)
+check<-check%>%left_join(check2, by=c("subclass_wind","matched_year_wind"))
+check<-check%>%group_by(subclass_wind)%>%
+  mutate(n=n())
+# Join the dataframes and copy the t_wind values
+wind_new <- wind_untreated_monthly %>%
+  left_join(wind_treated_monthly[, c("subclass_wind", "month", "ano", "t_wind")], 
+            by = c("subclass_wind", "month", "ano")) %>%
+  mutate(t_wind = ifelse(is.na(t_wind.x), t_wind.y, t_wind.x)) %>%
+  select(-t_wind.x, -t_wind.y)
+
+# Append the untreated rows with updated t_wind and treated rows
+wind_matched_final_monthly <- rbind(wind_new, wind_treated_monthly)
+#panel is balanced-> exactly 192 time period for each of the 62 municipalities
+
+#Create the placebo timing for the matched pairs
+# Split the data frame into treated and untreated
+wind_treated_annual <- annual_panel %>%
+  filter(wind_treat_postmatch == 1)
+
+wind_untreated_annual <- annual_panel %>%
+  filter(wind_treat_postmatch == 0)
+
+# Join the dataframes and copy the t_wind values
+wind_new_annual <- wind_untreated_annual %>%
+  left_join(wind_treated_annual[, c("subclass_wind", "ano", "t_wind")], 
+            by = c("subclass_wind", "ano")) %>%
+  mutate(t_wind = ifelse(is.na(t_wind.x), t_wind.y, t_wind.x)) %>%
+  select(-t_wind.x, -t_wind.y)
+
+# Append the untreated rows with updated t_wind and treated rows
+wind_matched_final_annual <- rbind(wind_treated_annual, wind_new_annual)
+#panel is balanced-> exactly 192 time period for each of the 62 municipalities
+
+check<-solar_matched_final_monthly%>%ungroup()%>%distinct(subclass_solar, t_solar)
+check2<-solar_matched_final_monthly%>%ungroup()%>%distinct(id_municipio, t_solar)
+
+
+
+names(wind_matched_final_monthly) <- gsub("component", "comp", names(wind_matched_final_monthly))
+names(wind_matched_final_monthly) <- gsub("installation", "inst", names(wind_matched_final_monthly))
+names(solar_matched_final_monthly) <- gsub("component", "comp", names(solar_matched_final_monthly))
+names(solar_matched_final_monthly) <- gsub("installation", "inst", names(solar_matched_final_monthly))
+
+saveRDS(wind_matched_final_monthly,here("final","wind1to1_final_monthly.RDS"))
+saveRDS(solar_matched_final_monthly,here("final","solar1to1_final_monthly.RDS"))
+saveRDS(wind_matched_final_annual,here("final","wind1to1_final_annual.RDS"))
+saveRDS(solar_matched_final_annual,here("final","solar1to1_final_annual.RDS"))
+
+check<-wind_matched_final_monthly%>%group_by(id_municipio)%>%
+  summarise(n=n())
+check2<-wind_matched_final_annual%>%ungroup()%>%distinct(id_municipio,ano)
+
+write_dta(wind_matched_final_monthly,here("final","wind1to1_final_monthly.dta"))
+write_dta(solar_matched_final_monthly,here("final","solar1to1_final_monthly.dta"))
+names(wind_matched_final_annual) <- gsub("component", "comp", names(wind_matched_final_annual))
+names(wind_matched_final_annual) <- gsub("installation", "inst", names(wind_matched_final_annual))
+names(solar_matched_final_annual) <- gsub("component", "comp", names(solar_matched_final_annual))
+names(solar_matched_final_annual) <- gsub("installation", "inst", names(solar_matched_final_annual))
+
+write_dta(wind_matched_final_annual%>%select(-municipio_state.x,-municipio_state.y),here("final","wind1to1_final_annual.dta"))
+write_dta(solar_matched_final_annual%>%select(-municipio_state.x,-municipio_state.y),here("final","solar1to1_final_annual.dta"))
+```

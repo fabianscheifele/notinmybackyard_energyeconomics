@@ -1,0 +1,757 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+0. load packages
+```{r}
+suppressMessages(memory.limit(size = NA))
+
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","knitr","here", "tidyverse" , "anytime" , "data.table", "corrplot", "naniar", "fuzzyjoin","expss", "janitor","readr", "data.table", "labelled", "countrycode","grep", "economiccomplexity","xtable","ggbump", "cowplot","ggrepel", "survival","lubridate"))
+
+
+`%notin%` <- Negate(`%in%`)
+```
+
+
+1. import data
+```{r}
+bndes_merge<-readRDS(here("final","bndes_final.RDS"))
+bndes_merge1<-readRDS(here("final","bndes_final.RDS"))
+
+auction_generation_final<- readRDS(here("intermediate","aneel_generation_nobndes.RDS"))
+
+bndes_merge_distinct<-bndes_merge%>%distinct(contract_number)
+
+#restrict  data sets to relevant columns.
+
+bndes_merge<-bndes_merge%>%select(station_name, product, complex, client, municipality_code, amountInPark, auction, complex, source_type_bndes, generation_type_bndes,bndes_id, municipality)
+
+
+aneel_merge<-auction_generation_final%>%select(station_name, id, mun_id, agent_name, municipality.x, generation_type, plant_id)%>%
+  rename(id_aneel=id)
+
+```
+
+
+```{r}
+#change roman figures to arabic numbers in both files for better recognition
+bndes_merge$station_name <-
+  gsub(' III', ' 3', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' II', ' 2', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' IV', ' 4', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' VIII', ' 8', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' VII', ' 7', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' IX', ' 9', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' XXI', ' 9', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' XVIII', '18', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' XVII', ' 17', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' XVI', ' 16', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' XV', ' 15', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' XIV', ' 14', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' XIII', ' 13', bndes_merge$station_name)
+bndes_merge$station_name <-
+  gsub(' XII', ' 12', bndes_merge$station_name)
+
+
+
+for (i in 1:nrow(bndes_merge)) {
+  if (!is.na(bndes_merge$station_name[i])) {
+    if (str_detect(bndes_merge$station_name[i], " XI")) {
+      bndes_merge$station_name <-
+        gsub(' XI$', '11', bndes_merge$station_name)
+    }
+    if (str_detect(bndes_merge$station_name[i], " X")) {
+      bndes_merge$station_name <-
+        gsub(' X', ' 10', bndes_merge$station_name)
+    }
+    if (str_detect(bndes_merge$station_name[i], " VI")) {
+      bndes_merge$station_name <-
+        gsub(' VI$', ' 6', bndes_merge$station_name)
+    }
+    if (str_detect(bndes_merge$station_name[i], " V")) {
+      bndes_merge$station_name <-
+        gsub('V$', '5', bndes_merge$station_name)
+    }
+    
+    if (str_detect(bndes_merge$station_name[i], " I")) {
+      bndes_merge$station_name <-
+        gsub(' I$', ' 1', bndes_merge$station_name)
+    }
+  }
+}
+
+
+aneel_merge$station_name <-
+  gsub(' III', ' 3', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' II', ' 2', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' IV', ' 4', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' VIII', ' 8', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' VII', ' 7', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' VI', ' 6', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' IX', ' 9', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXI', ' 9', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XVIII', '18', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XVII', ' 17', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XVI', ' 16', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XV', ' 15', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XIV', ' 14', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XIII', ' 13', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XII', ' 12', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXIII', ' 23', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXII', ' 22', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXI', ' 21', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXIV', ' 24', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXVIII', ' 28', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXVII', ' 27', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXVI', ' 26', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXV', ' 25', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXXV', ' 35', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXXIV', ' 34', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXXIII', ' 33', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXXII', ' 32', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXXI', ' 31', aneel_merge$station_name)
+aneel_merge$station_name <-
+  gsub(' XXX', ' 30', aneel_merge$station_name)
+
+
+
+for (i in 1:nrow(aneel_merge)) {
+  if (!is.na(aneel_merge$station_name[i])) {
+    if (str_detect(aneel_merge$station_name[i], " XI")) {
+      aneel_merge$station_name[i] <-
+        gsub(' XI$', '11', aneel_merge$station_name[i])
+    }
+    if (str_detect(aneel_merge$station_name[i], " X")) {
+      aneel_merge$station_name[i] <-
+        gsub(' X', ' 10', aneel_merge$station_name[i])
+    }
+    if (str_detect(aneel_merge$station_name[i], " V")) {
+      aneel_merge$station_name[i] <-
+        gsub('V$', '5', aneel_merge$station_name[i])
+    }
+    if (str_detect(aneel_merge$station_name[i], " VI")) {
+      aneel_merge$station_name <-
+        gsub(' VI$', ' 6', aneel_merge$station_name)
+    }
+    if (str_detect(aneel_merge$station_name[i], " I")) {
+      aneel_merge$station_name[i] <-
+        gsub(' I$', ' 1', aneel_merge$station_name[i])
+    }
+  }
+}
+#manual corrections
+ bndes_merge$station_name[bndes_merge$bndes_id==197]<-"XIQUE XIQUE"
+
+```
+
+
+2. Merge BNDES data with auction_generation_final (AIM is to add row id of aneel_generation to BNDES and then make clean left-join)
+```{r}
+#bndes_merge<-bndes_merge%>%mutate(row_id = row_number())
+bndes_merge <- tibble::rowid_to_column(bndes_merge, "ID")
+
+#1. merge on plant name
+merge1 <- bndes_merge%>%stringdist_left_join(aneel_merge,
+                   by           = c("station_name"="station_name"),
+                   ignore_case  = TRUE, 
+                   max_dist     = 0.1,
+                   method = "jw",
+                  distance_col = "dist")  %>% 
+mutate(merge_type = ifelse(!is.na(dist), 1, NA))
+
+
+#group by the ID you gave above in the BNDES set
+merge1 <-merge1%>%
+                group_by(ID) %>%
+                slice_min(dist,n=1, with_ties = FALSE)%>%ungroup()
+
+#Do quality check for matches with high distance
+#Quality criteria for keep: Either exact same name or same complex (e.g. Sao Januario 5, but BNDES has Sao Januario 1, in case of complex check whether the operation start date was same, if yes or if very close (several weeks/months apart then fine))
+quality_check<-merge1%>%select(station_name.x, station_name.y, mun_id,  municipality.x, municipality, client, agent_name, generation_type, source_type_bndes, ID, dist)%>%arrange(-dist)
+sum(!is.na(merge1$dist))/length(merge1$dist)
+#it matches around half the stations but there are also some bad matches which may have to be sorted out manually
+
+#checked manually. all following entries should be rematched
+jerico_m1<- merge1[merge1$ID == 234, ]
+delta3_1_m1<- merge1[merge1$ID == 254, ]
+delta3_2_m1<- merge1[merge1$ID == 255, ]
+delta3_3_m1<- merge1[merge1$ID == 256, ]
+delta3_4_m1<- merge1[merge1$ID == 260, ]
+monika_m1<- merge1[merge1$ID == 297, ]
+santana_m1<- merge1[merge1$ID == 292, ]
+monika_1_m1<- merge1[merge1$ID == 331, ]
+palmares_m1<-merge1[merge1$ID == 507, ]
+alvorada_m1<-merge1[merge1$ID == 513, ]
+buruti_m1<-merge1[merge1$ID == 525, ]
+santa_antonio_m1<-merge1[merge1$ID == 532, ]
+guimarania_2_m1<-merge1[merge1$ID == 186, ]
+paracatu1_m1<-merge1[merge1$ID == 188, ]
+paracatu2_m1<-merge1[merge1$ID == 189, ]
+paracatu4_m1<-merge1[merge1$ID == 191, ]
+pirapora_m1<-merge1[merge1$ID == 241, ]
+sao_jorge_m1<-merge1[merge1$ID == 426, ]
+bom_j_m1<-merge1[merge1$ID == 530, ]
+cascata_m1<-merge1[merge1$ID == 528, ]
+salto_m1<-merge1[merge1$ID == 527, ]
+
+dos_ventos1_m1<-merge1[merge1$ID == 315, ]
+dos_ventos2_m1<-merge1[merge1$ID == 316, ]
+dos_ventos3_m1<-merge1[merge1$ID == 317, ]
+dos_ventos4_m1<-merge1[merge1$ID == 318, ]
+dos_ventos10_m1<-merge1[merge1$ID == 319, ]
+
+mirim4_m1<-merge1[merge1$ID == 243, ]
+mirim6_m1<-merge1[merge1$ID == 244, ]
+calango6_m1<-merge1[merge1$ID == 291, ]
+
+merge1_manual<-rbind(delta3_1_m1, delta3_2_m1, delta3_3_m1, delta3_4_m1, monika_m1, monika_1_m1, palmares_m1, alvorada_m1, buruti_m1, santa_antonio_m1, guimarania_2_m1, paracatu1_m1, paracatu2_m1,paracatu4_m1, pirapora_m1, sao_jorge_m1, bom_j_m1, salto_m1, cascata_m1, santana_m1, jerico_m1, dos_ventos1_m1, dos_ventos2_m1, dos_ventos3_m1, dos_ventos4_m1, dos_ventos10_m1, mirim6_m1, mirim4_m1, calango6_m1)
+
+#removing wrong matches
+ids_to_remove_1<-c(181, 184, 186, 188, 189, 191, 241, 233, 234, 254, 255, 256, 260, 297, 328, 331, 382, 365, 366, 367, 368, 369, 370, 371, 372, 373, 374, 465, 477, 507, 513, 525, 532, 426, 530, 528, 527, 292, 315, 316, 317, 318, 319, 243, 244, 291)
+
+merge1_found <- merge1[!(merge1$ID %in% ids_to_remove_1), ]
+
+#Check how many were found and compare to distinct number of stations in BNDES set
+merge1_found<-merge1_found%>%filter(!is.na(id_aneel))
+
+#separate the ones not found and re-do matching on other variable (remove the columns from the merged set first)
+#Actually merges 2 and 3 should only be done where we do not have any station name, because if we have and it did not not match then check why it did not match
+
+merge2_prep<-merge1%>%filter(is.na(id_aneel))%>%select(1:11)
+
+#Create combination of client and municipality ID for match
+merge2_prep<-merge2_prep%>%mutate(agent_mun=paste(client, municipality_code, sep="-"))
+aneel_merge<-aneel_merge%>%mutate(agent_mun=paste(agent_name, mun_id, sep = "-"))
+
+#2. merge on the client and municipality code
+merge2<-stringdist_join(
+                  merge2_prep, aneel_merge,
+                   by           = "agent_mun",
+                   mode         = "left",
+                   ignore_case  = TRUE, 
+                   method       = "jw", 
+                   max_dist     = 0.10,
+                  distance_col = "dist")%>% 
+mutate(merge_type = ifelse(!is.na(dist), 2, NA))
+
+#select best match
+merge2 <-merge2%>%
+                group_by(ID) %>%
+                slice_min(dist,n=1, with_ties = FALSE)%>%ungroup()
+
+#Do quality check for matches with high distance
+quality_check2<-merge2%>%select(agent_mun.x, agent_mun.y, station_name, mun_id, agent_name, municipality.x, generation_type,station_name,municipality_code, ID, dist)%>%arrange(-dist)
+#works quite goood, finds another ~110 mathces
+
+#Check how many were found and compare to distinct number of stations in BNDES set
+merge2_found<-merge2%>%filter(!is.na(id_aneel))
+
+#removing wrong merges: checked manually. OR remerge manually if possible later
+campo_m2<- merge2_found[merge2_found$ID == 101, ]
+merge2_manual <- rbind(campo_m2)
+ids_to_remove_2 <- c(34,70,81,82,101,112,114,115,117,119,120,121,123,133, 370,371,372,373,374, 234, 160, 498, 65, 71, 53,54, 83, 163, 118)
+merge2_found <- merge2_found[!(merge2_found$ID %in% ids_to_remove_2), ]
+
+merge2_manual<-merge2_manual%>%select(1:11)
+merge1_manual<-merge1_manual%>%select(1:11)
+manual_merge<-rbind(merge2_manual, merge1_manual)
+manual_merge<-manual_merge%>%mutate(mun_source=paste(municipality_code, generation_type_bndes, sep="-"))
+
+#check what is still missing: still 139 parks from BNDES not found in ANEEL 
+merge3_prep<-merge2%>%filter(is.na(agent_mun.y))%>%select(1:11)
+
+
+#IF still missing then repeat process again only with municipality_id + bndes_source
+#Create combination of client and municipality ID for match
+merge3_prep<-merge3_prep%>%mutate(mun_source=paste(municipality_code, generation_type_bndes, sep="-"))
+aneel_merge<-aneel_merge%>%mutate(mun_source=paste(mun_id, generation_type, sep = "-"))
+
+#put really low distance to assure it only matches where municipality and source are identical (here you really have to go manually through them and check whether the matches are correct indeed, there is a high risk of wrong match because many muncipality have multiple wind or solar plants)
+
+#merge on the municipality code and energy generation type (use later to check matches)
+merge3_t<-stringdist_join(
+                  merge3_prep, aneel_merge,
+                   by           = "mun_source",
+                   mode         = "left",
+                   ignore_case  = TRUE, 
+                   method       = "jw", 
+                   max_dist     = 0.02,
+                  distance_col = "dist")%>%
+                group_by(ID) %>%
+                slice_min(dist,n=1, with_ties = FALSE)
+#Do quality check for matches with high distance
+quality_check3<-merge3_t%>%select(mun_source.x, mun_source.y, station_name,station_name.x, client, agent_name,municipality.x,municipality_code, mun_id, ID, dist)%>%arrange(-dist)
+
+
+#exporting file for manual check
+writexl::write_xlsx(merge3_t, here("intermediate", "manual_matching_test.xlsx"))
+writexl::write_xlsx(merge3_prep, here("intermediate", "manual_matching.xlsx"))
+
+merge3<-merge3_prep
+merge3<-rbind(merge3,manual_merge)
+merge3<-merge3%>%mutate(plant_id=NA)
+
+ 
+#manual matching
+#Santa Joana
+merge3$plant_id[merge3$ID==397]<-31417
+#CAMPOS DOS VENTOS 3
+merge3$plant_id[merge3$ID==329]<-31071
+#DELTA 3 1
+merge3$plant_id[merge3$ID==254]<-33682
+#DELTA 3 2
+merge3$plant_id[merge3$ID==255]<-33683
+#DELTA 3 3
+merge3$plant_id[merge3$ID==256]<-33684
+#DELTA 3 4
+merge3$plant_id[merge3$ID==257]<-33685
+#DELTA 3 5
+merge3$plant_id[merge3$ID==258]<-33675
+#DELTA 3 6
+merge3$plant_id[merge3$ID==259]<-33673
+#DELTA 3 7
+merge3$plant_id[merge3$ID==260]<-33680
+#NOSSA SENHORA
+merge3$plant_id[merge3$ID==129]<-30318
+#lagoa 1 
+merge3$plant_id[merge3$ID==57]<-33664
+#Chafariz 1
+merge3$plant_id[merge3$ID==52]<-34639
+#CAMPOS DOS VENTOS 1
+merge3$plant_id[merge3$ID==22]<-31072
+#Camilo Pontes 2 
+merge3$plant_id[merge3$ID==106]<-30516
+#Camilo Pontes 1 
+merge3$plant_id[merge3$ID==105]<-30515
+#Cabeço Preto
+merge3$plant_id[merge3$ID==126]<-30333
+
+#GERIBATU 1 - 10:Verace 1 - 10 is the same
+merge3$plant_id[merge3$ID==431]<-30745
+merge3$plant_id[merge3$ID==432]<-30742
+merge3$plant_id[merge3$ID==433]<-30746
+merge3$plant_id[merge3$ID==434]<-30741
+merge3$plant_id[merge3$ID==435]<-30829
+merge3$plant_id[merge3$ID==436]<-30740
+merge3$plant_id[merge3$ID==437]<-30747
+merge3$plant_id[merge3$ID==438]<-30755
+merge3$plant_id[merge3$ID==439]<-30748
+merge3$plant_id[merge3$ID==440]<-30749
+
+#CHUI 9
+merge3$plant_id[merge3$ID==320]<-31517
+####?????
+#merge3$plant_id[merge3$ID==375]<-30870
+
+#santana1 
+merge3$plant_id[merge3$ID==292]<-31810
+#Campo dos Ventos 2
+merge3$plant_id[merge3$ID==101]<-30500
+
+#SANTA JOANA 2
+merge3$plant_id[merge3$ID==396]<-31361
+
+#RIO DO FOGO
+merge3$plant_id[merge3$ID==537]<-28424
+#Gargau
+merge3$plant_id[merge3$ID==135]<-28730
+#Pedra do Reino 3
+merge3$plant_id[merge3$ID==125]<-30608
+#Serra de Santana 1
+merge3$plant_id[merge3$ID==73]<-30625
+#Lanchinha
+merge3$plant_id[merge3$ID==74]<-30860
+#Santa Brigida 1 - 7
+merge3$plant_id[merge3$ID==407]<-31365
+merge3$plant_id[merge3$ID==539]<-31363
+merge3$plant_id[merge3$ID==540]<-31363
+merge3$plant_id[merge3$ID==541]<-31370
+merge3$plant_id[merge3$ID==542]<-31346
+merge3$plant_id[merge3$ID==543]<-31353
+merge3$plant_id[merge3$ID==544]<-31422
+#	SANTA MONICA
+merge3$plant_id[merge3$ID==297]<-32013
+
+#merge3$plant_id[merge3$ID==513]<-30320
+
+#sai jorge 
+merge3$plant_id[merge3$ID==426]<-30911
+#bom
+merge3$plant_id[merge3$ID==530]<-29062
+#cascata
+merge3$plant_id[merge3$ID==528]<-29054
+#salto
+merge3$plant_id[merge3$ID==527]<-29056
+#ventos de santa monica
+merge3$plant_id[merge3$ID==331]<-31427
+
+#Buriti
+merge3$plant_id[merge3$ID==525]<-30279
+#Santo Antônio
+merge3$plant_id[merge3$ID==532]<-29053
+#PALMARES
+merge3$plant_id[merge3$ID==507]<-28855
+#ALVORADA
+merge3$plant_id[merge3$ID==513]<-30320
+#Guimarania 
+merge3$plant_id[merge3$ID==186]<-34074
+
+#PARACATU 1
+merge3$plant_id[merge3$ID==188]<-33999
+#PARACATU 2
+merge3$plant_id[merge3$ID==189]<-34000
+#PARACATU 4
+merge3$plant_id[merge3$ID==191]<-33991
+
+#PIRAPORA 1
+merge3$plant_id[merge3$ID==241]<-33188
+
+
+#Chui 1
+merge3$plant_id[merge3$ID==387]<-30767
+#Chui 2
+merge3$plant_id[merge3$ID==388]<-30790
+#Chui 4
+merge3$plant_id[merge3$ID==389]<-30754
+#Chui 5
+merge3$plant_id[merge3$ID==392]<-30760
+
+#jerico
+merge3$plant_id[merge3$ID==234]<-31802
+
+#dos ventos 1
+merge3$plant_id[merge3$ID==315]<-30920
+#dos ventos 2
+merge3$plant_id[merge3$ID==316]<-30918
+#dos ventos 3
+merge3$plant_id[merge3$ID==317]<-30924
+#dos ventos 4
+merge3$plant_id[merge3$ID==318]<-30926
+#dos ventos 10
+merge3$plant_id[merge3$ID==319]<-30925
+
+#mirim 4
+merge3$plant_id[merge3$ID==243]<-31663
+#mirim 6
+merge3$plant_id[merge3$ID==244]<-31701
+
+#calango 6
+merge3$plant_id[merge3$ID==291]<-31812
+
+
+#7 stations in one project description (SANTA BRIGIDA I - VII)
+alex_station_m1 <- merge3[merge3$ID == 145, ]
+merge3 <- rbind(merge3, alex_station_m1, alex_station_m1, alex_station_m1, alex_station_m1)
+
+
+alex_station_m2 <- merge3[merge3$ID == 146, ]
+merge3 <- rbind(merge3, alex_station_m2, alex_station_m2, alex_station_m2)
+
+
+merge3<-merge3%>% mutate(ID = row_number())
+merge3$plant_id[merge3$ID==36]<-35859
+merge3$plant_id[merge3$ID==123]<-35861
+merge3$plant_id[merge3$ID==124]<-35863
+merge3$plant_id[merge3$ID==125]<-35864
+merge3$plant_id[merge3$ID==126]<-35883
+
+merge3$plant_id[merge3$ID==37]<-35699
+merge3$plant_id[merge3$ID==127]<-35860
+merge3$plant_id[merge3$ID==128]<-35862
+merge3$plant_id[merge3$ID==129]<-35884
+
+
+       
+#left join to aneel_merge based on newly added id_aneel
+merge3 <- left_join(merge3, aneel_merge, by ="plant_id")
+
+#Check how many were found and compare to distinct number of stations in BNDES set
+merge3_found<-merge3%>%filter(!is.na(plant_id))
+merge3_found<-merge3_found%>%mutate(merge_type = 3)
+
+
+#add the end bind all the rows of the separated merges together (merge1_found, merge2_found2, merge2_found3)
+#478 matches out of 529 were found 
+bndes_merge_final<-bind_rows(merge1_found,merge2_found, merge3_found)
+
+#remove uneccessary columns
+for(i in 1:nrow(bndes_merge_final)){
+if (is.na(bndes_merge_final$station_name.y[i])){
+  bndes_merge_final$station_name.y[i] = bndes_merge_final$station_name[i] 
+}}
+
+bndes_merge_final<-bndes_merge_final%>%select(-agent_mun.y,-mun_source.x,-mun_source.y, -agent_mun.x, -agent_mun, -station_name)
+
+
+#create these Local content variables based on whether it is FINEM product or not, plus general BNDES dummy
+#Add information about local content obligation (FINEM loan products)
+bndes_merge_final<-bndes_merge_final%>% mutate(LCR = NA)
+
+for(i in 1:nrow(bndes_merge_final)){
+if (str_detect(bndes_merge_final$product[i], "BNDES FINEM")){
+  bndes_merge_final$LCR[i] = TRUE
+}
+  else bndes_merge_final$LCR[i] = FALSE
+}
+
+bndes_merge_final<-bndes_merge_final%>% mutate(ID = row_number())
+
+  
+#check if there are different municipalities in match
+bndes_merge_final <- bndes_merge_final %>%
+  filter(!(municipality_code != mun_id & !municipality_code %in% c("9999999", "0000000")))
+
+#asa branca 6 - wrong municipality in non_automatic
+#UNIAO DOS VENTOS 5-7 - wrong municipality in non_automatic
+#COQUEIRO - wrong municipality in non_automatic
+#CAJUCOCO - wrong municipality in non_automatic
+#santa joana 2, Santa brigida 1,2,3,5 - probably different stations
+#calango 1-5. In non_automatic they are in 3 mun including bodo. But in aneel only in Bodo
+#palmas doesn't exist in aneel merge
+# RENASCENCA 5 - wrong municipality in non_automatic
+# MALHADINHA 1 wrong municipality in non_automatic???
+# ASSURUA 2, ASSURUA 7 - wrong match
+#Testa branca 1,3 - different municipalities in non_automatic and aneel
+# AROEIRA, UMBUZEIROS located in 2 muncipalities in nao and in one in aneel
+# Aventura 1 - different municipalities in non_automatic and aneel
+# MACAMBIRA 1  - different municipalities in non_automatic and aneel
+# campo largo fase 2 - general project name - not a station
+# VENTOS DE SANTA MARTINA 01 wrong municipio in non_automatic, right municipio in non_automatic project_description and aneel
+# SANTO AGOSTINHO - located in 2 municipalities in non_automatic including PEDRO AVELINO - RN, merged to PEDRO AVELINO - RN from aneel
+# VENTOS DE SANTA LEIA 12 located in 3 municipalities in non_automatic including LAJES, merged to LAJES from aneel
+# VENTOS DE SANTA LEIA 04 located in 3 municipalities in non_automatic including LAJES, merged to LAJES from aneel
+# VENTOS DE SANTA LEIA 02 located in 3 municipalities in non_automatic including LAJES, merged to LAJES from aneel
+# VENTOS DE SANTA LUZIA 11 located in 3 municipalities in non_automatic including Monte das Gameleiras - RN, merged to Monte das Gameleiras - RN from aneel 
+
+#wrong matches
+ids_to_remove<-c(348,349,350,351,353,354,355,356,357,361,362,363,364,365,325,326,327,328,329, 330)
+
+bndes_merge_final <- bndes_merge_final[!(bndes_merge_final$ID %in% ids_to_remove), ]
+
+#create df to check match quality
+check<-bndes_merge_final%>%select(1,2,5,10,11,12,13,generation_type, agent_name,municipality.x)
+
+bndes_final_distinct <- bndes_merge_final %>% 
+  distinct(plant_id, .keep_all = TRUE) %>% 
+  select(3, 19, 22)
+
+bndes_final_distinct_long <- bndes_merge_final %>% 
+  distinct(plant_id, .keep_all = TRUE) 
+
+
+remove(campo_m2,alex_station_m1, alex_station_m2, delta3_1_m1, delta3_2_m1, manual_merge, merge1_manual, merge2_manual, merge3_t, bom_j_m1, cascata_m1, delta3_3_m1, delta3_4_m1, dos_ventos1_m1, dos_ventos10_m1, dos_ventos2_m1, dos_ventos3_m1, dos_ventos4_m1, guimarania_2_m1, jerico_m1, palmares_m1, paracatu1_m1, paracatu2_m1, paracatu4_m1, salto_m1, santa_antonio_m1, santana_m1, alvorada_m1, buruti_m1, monika_1_m1, monika_m1, pirapora_m1, sao_jorge_m1)
+
+writexl::write_xlsx(bndes_final_distinct_long, here("intermediate", "matched.xlsx"))
+
+#then left-join to generation data (should not create additional rows!)
+auction_generation_final<-auction_generation_final%>%left_join(bndes_final_distinct, by=c("plant_id"="plant_id"))
+
+auction_generation_final$LCR<-as.integer(auction_generation_final$LCR)
+auction_generation_final$LCR[is.na(auction_generation_final$LCR)]<-0
+auction_generation_final<-auction_generation_final%>%mutate(bndes_support = if_else(!is.na(product), 1,0))
+
+
+```
+
+3. Restrict to operational plants and aggregate the plant level set at the municipality-year level
+```{r}
+nas_id<-auction_generation_final%>%filter(is.na(mun_id))
+#no NAs
+remove(nas_id)
+#data currently distinct at municipality-company-plant-level but not yet at municipality-plant-level, hence reduction
+distinct_test<-auction_generation_final%>%ungroup()%>%distinct(mun_id, plant_id)
+remove(distinct_test)
+auction_generation_final<-auction_generation_final%>%ungroup()%>%distinct(mun_id, plant_id, .keep_all=TRUE)
+
+
+#DATA Set Restriction: All non-operational have "1900-01-03" as start data (if more sample restrictions add here below)
+non_operational<-auction_generation_final%>%filter(plant_phase!="Opera\u00E7\u00E3o")
+
+#8200 out of 24000 plants will go live in 2022
+year_2022<-auction_generation_final%>%filter(year_operation==2022)
+unique(non_operational$operation_start_date)
+
+#however there are also 181 active power plants with year operation being 1900
+operational<-auction_generation_final%>%filter(plant_phase=="Opera\u00E7\u00E3o" & year_operation==1900)%>%ungroup()%>%
+  distinct(plant_id, .keep_all = TRUE)
+
+
+ municipality_year<-auction_generation_final%>%filter(plant_phase=="Opera\u00E7\u00E3o"& year_operation!=1900)%>%
+   group_by(mun_id,year_operation,generation_type)%>%
+   summarize(no_plants=n(), mw_operation=sum(mw_operation))
+
+
+#put it in wide format
+municipality_wide<-municipality_year%>%pivot_wider(id_cols = c("mun_id","year_operation"), names_from = "generation_type", values_from = c("no_plants", "mw_operation")) 
+
+ municipality_wide <- municipality_wide %>%
+  ungroup() %>%
+   mutate_all(as.numeric)
+
+ municipality_wide[is.na(municipality_wide)]<-0
+
+
+municipality_wide <- municipality_wide %>%ungroup()
+municipality_wide <- municipality_wide %>%
+  mutate(total_new_plants= rowSums(select(., starts_with("no_plants"))))%>%
+  mutate(total_mw_new= rowSums(select(., starts_with("mw_"))))
+
+all_comb<-municipality_wide%>%expand(year_operation, mun_id)
+all_comb<-all_comb%>%left_join(municipality_wide, by=c("year_operation", "mun_id"))
+
+all_comb[is.na(all_comb)]<-0
+all_comb<-all_comb%>%arrange(mun_id,year_operation)
+
+
+#create category "other" to distinguish non-solar, non-pv plants
+all_comb<-all_comb%>%rowwise()%>%  
+  mutate(mw_other=sum(mw_operation_PCH,mw_operation_CGH,mw_operation_UTE,mw_operation_UHE,mw_operation_UTN))%>%
+  mutate(no_plants_other=sum(no_plants_PCH, no_plants_CGH,no_plants_UTE,no_plants_UHE,no_plants_UTN))%>%ungroup()
+
+#renaming of key variables
+all_comb<-all_comb%>%
+  rename(no_plants_solar=no_plants_UFV, no_plants_wind=no_plants_EOL,new_mw_wind=mw_operation_EOL, 
+         new_mw_solar=mw_operation_UFV, new_mw_other=mw_other)           
+
+#Create cumulative series 
+all_comb<-all_comb%>%group_by(mun_id)%>%
+  mutate(mw_cum_total=cumsum(total_mw_new))%>%
+  mutate(cum_no_plants=cumsum(total_new_plants))%>%
+  mutate(mw_cum_solar=cumsum(new_mw_solar))%>%
+  mutate(mw_cum_wind=cumsum(new_mw_wind))%>%
+  mutate(mw_cum_other=cumsum(new_mw_other))%>%
+  mutate(cum_no_plants_other=cumsum(no_plants_other))%>%
+  mutate(cum_no_plants_solar=cumsum(no_plants_solar))%>%
+  mutate(cum_no_plants_wind=cumsum(no_plants_wind))
+
+#add the information about the BNDES support (Local content requirements)
+bndes_panel<-auction_generation_final%>%group_by(mun_id, year_operation)%>%
+  mutate(bndes_supported=if_else(any(bndes_support==1),1,0))%>%
+           mutate(bndes_lcr=if_else(any(LCR==1),1,0))
+bndes_panel<-bndes_panel%>%distinct(mun_id,year_operation,bndes_lcr,bndes_supported)
+         
+bndes_panel$mun_id<-as.numeric(bndes_panel$mun_id)
+all_comb_1<-all_comb%>%left_join(bndes_panel, by=c("year_operation","mun_id"))
+
+#save
+saveRDS(all_comb_1, here("intermediate","plants_municipality_year.RDS"))
+
+rm(list=setdiff(ls(), c("auction_generation_final", "bndes_final_distinct")))
+```
+
+4. Repeat for municipality-month level
+```{r}
+auction_generation_final$month_operation <- lubridate::month(as.Date(auction_generation_final$operation_start_date))
+
+# for me filter by Operação does not work, because of special symbols 'çã'. To represent them the escape sequence "\u00E7" is used, like this:  Opera\u00E7\u00E3o
+municipality_month<-auction_generation_final%>%filter(plant_phase=="Opera\u00E7\u00E3o" & year_operation!=1900)%>%
+  group_by(mun_id,year_operation,month_operation,generation_type)%>%summarize(no_plants=n(), mw_operation=sum(mw_operation))
+
+#put it in wide format
+municipality_wide<-municipality_month%>%pivot_wider(id_cols = c("mun_id","year_operation", "month_operation"), names_from = "generation_type", values_from = c("no_plants", "mw_operation"))
+
+municipality_wide <- municipality_wide %>%
+  mutate_all(as.numeric)
+
+municipality_wide[is.na(municipality_wide)]<-0
+
+municipality_wide <- municipality_wide %>%ungroup()
+municipality_wide <- municipality_wide %>%
+  mutate(total_new_plants= rowSums(select(., starts_with("no_plants"))))%>%
+  mutate(total_mw_new= rowSums(select(., starts_with("mw_"))))
+
+#create category "other" to distinguish non-solar, non-pv plants
+municipality_wide<-municipality_wide%>%rowwise()%>%  
+  mutate(mw_other=sum(mw_operation_PCH,mw_operation_CGH,mw_operation_UTE,mw_operation_UHE,mw_operation_UTN))%>%
+  mutate(no_plants_other=sum(no_plants_PCH, no_plants_CGH,no_plants_UTE,no_plants_UHE,no_plants_UTN))%>%ungroup()
+
+#renaming of key variables
+municipality_wide<-municipality_wide%>%
+  rename(no_plants_solar=no_plants_UFV, no_plants_wind=no_plants_EOL,new_mw_wind=mw_operation_EOL, 
+         new_mw_solar=mw_operation_UFV, new_mw_other=mw_other)           
+
+expand<-municipality_wide%>%ungroup()%>%expand(mun_id, year_operation, month_operation)
+expand<-expand%>%left_join(municipality_wide, by=c("mun_id","year_operation", "month_operation"))
+
+#replace newly created NA rows with zeros 
+expand[is.na(expand)]<-0
+ 
+#Create cumulative series 
+expand<-expand%>%group_by(mun_id)%>%
+  mutate(mw_cum_total=cumsum(total_mw_new))%>%
+  mutate(cum_no_plants=cumsum(total_new_plants))%>%
+  mutate(mw_cum_solar=cumsum(new_mw_solar))%>%
+  mutate(mw_cum_wind=cumsum(new_mw_wind))%>%
+  mutate(mw_cum_other=cumsum(new_mw_other))%>%
+  mutate(cum_no_plants_other=cumsum(no_plants_other))%>%
+  mutate(cum_no_plants_solar=cumsum(no_plants_solar))%>%
+  mutate(cum_no_plants_wind=cumsum(no_plants_wind))
+
+
+#add the information about the BNDES support
+bndes_panel<-auction_generation_final%>%group_by(mun_id, year_operation, month_operation)%>%
+  mutate(bndes_supported=if_else(any(bndes_support==1),1,0))%>%
+           mutate(bndes_lcr=if_else(any(LCR==1),1,0))
+bndes_panel<-bndes_panel%>%distinct(mun_id,year_operation,month_operation,bndes_lcr,bndes_supported)
+
+expand<-expand%>%left_join(bndes_panel, by=c("year_operation","mun_id","month_operation"))
+
+#take out the years prior to 2007 for monthly series 
+expand_final<-expand%>%filter(year_operation>2006)
+
+expand_final$bndes_lcr[is.na(expand_final$bndes_lcr)]<-0
+expand_final$bndes_supported[is.na(expand_final$bndes_supported)]<-0
+
+
+saveRDS(expand_final, here("intermediate","plants_municipality_month.RDS"))
+
+rm(list=ls())
+```
+

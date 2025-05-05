@@ -1,0 +1,270 @@
+---
+title: "10c Heterogeneity analysis TWFE 1-to-1"
+output: html_document
+date: "2023-10-08"
+editor_options: 
+  chunk_output_type: console
+---
+
+Packages and functions
+```{r }
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","here","bacondecomp", "fixest", "plm","geobr","sf","ggdist","ggspatial", "ggsn"))
+
+coefplots<-function(formula, df, title, vars, pre,post,seq, seq_graph,subfolder,filename){
+  fe<-feols(formula, df, cluster = "id_municipio")
+  coef<-coef(fe)[grepl(paste0("^(", paste(vars, collapse = "|"), ")"), names(coef(fe)))]
+  se <- se(fe)[grepl(paste0("^(", paste(vars, collapse = "|"), ")"), names(coef(fe)))]
+  data<-data.frame(coef,se)%>%mutate(x.axis=seq(pre,post,seq))
+  plot <-ggplot(data, aes(x = x.axis, y = coef)) +
+  geom_ribbon(aes(ymin = coef - 1.96 * se, ymax = coef + 1.96 * se), fill = "gray70") +
+   geom_line() +ggtitle(title)+
+  labs(x="", y="")+theme_bw()+ theme(text = element_text(size = 7))+scale_x_continuous(breaks=seq(pre,post,seq_graph))+geom_vline(xintercept = 0, linetype="dashed")+geom_hline(yintercept = 0, linetype="dashed")
+  ggsave(plot, filename=(here("output", "regressions","TWFE 1-to-1 binning", subfolder,filename )), width = 2000, height=1000, units="px")
+print(plot)
+  }
+
+#Functions for splitting sample and plotting two coeffcients lines in same plot
+extract_coeffs3<-function(formula1,formula2, df1, df2,start,mid, end,graph_seq, df1_group,df2_group, subfolder, filename,name_title){
+fe1<-feols(formula1, df1, cluster = "id_municipio")
+  df1<- as.data.frame(fe1$coeftable)
+df1 <- df1%>%
+  mutate(date = c(seq(start,mid,1),seq(mid+2,end,1)))%>%
+  mutate(conf.low=Estimate-1.96*`Std. Error`,
+         conf.high=Estimate+1.96*`Std. Error`)
+  df1$date<-as.numeric(df1$date)
+  df1<-df1%>%mutate(fill_group=df1_group)%>%select(date, Estimate, conf.low,conf.high, fill_group)
+  add_row1 <- data.frame(Estimate = 0, date = mid+1,conf.low=0,conf.high=0, fill_group=df1_group)
+  df1 <- bind_rows(df1, add_row1)
+  
+fe2<-feols(formula2, df2, cluster = "id_municipio")
+df2<- as.data.frame(fe2$coeftable)
+
+df2 <- df2%>%
+  mutate(date = c(seq(start,mid,1),seq(mid+2,end,1)))%>%
+  mutate(conf.low=Estimate-1.96*`Std. Error`,
+         conf.high=Estimate+1.96*`Std. Error`)
+  df2$date<-as.numeric(df2$date)
+   df2<-df2%>%mutate(fill_group=df2_group)%>%select(date, Estimate, conf.low,conf.high, fill_group)
+  add_row2 <- data.frame(Estimate = 0, date = mid+1,conf.low=0,conf.high=0,fill_group=df2_group)
+  df2 <- bind_rows(df2, add_row2)
+
+    df_final<-bind_rows(df1,df2)
+    df_final <- df_final %>% 
+      mutate(fill_group = factor(fill_group, levels = c(df1_group, df2_group)))
+    
+    plot <- ggplot(df_final %>% filter(date >= start, date <= end), aes(x = date, y = Estimate, fill = fill_group)) +
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.3) +
+    geom_line(aes(color=fill_group), show.legend = FALSE) +ggtitle("") +
+    
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+    labs(title = name_title,
+         fill = NULL,
+         x="",
+         y="") +  
+    theme_bw()+ theme(text = element_text(size = 7)) +
+    scale_fill_manual(values = alpha(c("blue", "gray50"), 0.6), labels = c(df1_group, df2_group)) +
+    scale_color_manual(values = alpha(c("blue", "gray50"), 0.6)) +
+    scale_x_continuous(breaks=c(start,seq(start+graph_seq+1,end-graph_seq-1,graph_seq),end),expand = c(0.01,0.01), labels = c(paste0(start,"+"),seq(start+graph_seq+1,end-graph_seq-1,graph_seq),paste0(end,"+")))+
+      scale_y_continuous(labels = scales::comma)+
+    theme(legend.position = "bottom")
+ggsave(plot, filename=(here("output", "regressions","TWFE 1-to-1 binning", subfolder,filename )), width = 2000, height=1000, units="px")
+print(plot)
+}
+
+extract_coeffs3_annual<-function(formula1,formula2, df1, df2,start,mid, end,graph_seq, df1_group,df2_group, subfolder, filename,name_title){
+fe1<-feols(formula1, df1, cluster = "id_municipio")
+  df1<- as.data.frame(fe1$coeftable)
+df1 <- df1%>%
+  mutate(date = c(seq(start,mid,1),seq(mid+2,end,1)))%>%
+  mutate(conf.low=Estimate-1.96*`Std. Error`,
+         conf.high=Estimate+1.96*`Std. Error`)
+  df1$date<-as.numeric(df1$date)
+  df1<-df1%>%mutate(fill_group=df1_group)%>%select(date, Estimate, conf.low,conf.high, fill_group)
+  add_row1 <- data.frame(Estimate = 0, date = mid+1,conf.low=0,conf.high=0, fill_group=df1_group)
+  df1 <- bind_rows(df1, add_row1)
+  
+fe2<-feols(formula2, df2, cluster = "id_municipio")
+df2<- as.data.frame(fe2$coeftable)
+
+df2 <- df2%>%
+  mutate(date = c(seq(start,mid,1),seq(mid+2,end,1)))%>%
+  mutate(conf.low=Estimate-1.96*`Std. Error`,
+         conf.high=Estimate+1.96*`Std. Error`)
+  df2$date<-as.numeric(df2$date)
+   df2<-df2%>%mutate(fill_group=df2_group)%>%select(date, Estimate, conf.low,conf.high, fill_group)
+  add_row2 <- data.frame(Estimate = 0, date = mid+1,conf.low=0,conf.high=0,fill_group=df2_group)
+  df2 <- bind_rows(df2, add_row2)
+
+    df_final<-bind_rows(df1,df2)
+    df_final <- df_final %>% 
+      mutate(fill_group = factor(fill_group, levels = c(df1_group, df2_group)))
+    
+    plot <- ggplot(df_final %>% filter(date >= start, date <= end), aes(x = date, y = Estimate, fill = fill_group)) +
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.3) +
+    geom_line(aes(color=fill_group), show.legend = FALSE) +ggtitle("") +
+    
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+    labs(title = name_title,
+         fill = NULL,
+         x="",
+         y="") +  
+    theme_bw()+ theme(text = element_text(size = 7)) +
+    scale_fill_manual(values = alpha(c("blue", "gray50"), 0.6), labels = c(df1_group, df2_group)) +
+    scale_color_manual(values = alpha(c("blue", "gray50"), 0.6)) +
+    scale_x_continuous(breaks=c(start,seq(start+1,end-1,graph_seq),end),expand = c(0.01,0.01), labels = c(paste0(start,"+"),seq(start+1,end-1,graph_seq),paste0(end,"+")))+
+      scale_y_continuous(labels = scales::comma)+
+    theme(legend.position = "bottom")
+ggsave(plot, filename=(here("output", "regressions","TWFE 1-to-1 binning", subfolder,filename )), width = 2000, height=1000, units="px")
+print(plot)
+}
+
+```
+
+load data
+```{r pressure, echo=FALSE}
+wind_50k<-readRDS(here("final","wind1to1_final_monthly_spillover.RDS"))%>%group_by(id_municipio)%>%filter(!is.na(subclass_wind_50k))%>%
+  mutate(wind_jobs_endmonth=wind_inst_endmonth+wind_comp_endmonth+wind_om_endmonth)
+wind_40k<-readRDS(here("final","wind1to1_final_monthly_spillover.RDS"))%>%group_by(id_municipio)%>%filter(!is.na(subclass_wind_40k))%>%
+  mutate(wind_jobs_endmonth=wind_inst_endmonth+wind_comp_endmonth+wind_om_endmonth)
+wind_20k<-readRDS(here("final","wind1to1_final_monthly_spillover.RDS"))%>%group_by(id_municipio)%>%filter(!is.na(subclass_wind_20k))%>%
+  mutate(wind_jobs_endmonth=wind_inst_endmonth+wind_comp_endmonth+wind_om_endmonth)
+
+solar_50k<-readRDS(here("final","solar1to1_final_monthly_spillover.RDS"))%>%group_by(id_municipio)%>%filter(!is.na(subclass_solar_50k))%>%
+  mutate(solar_jobs_endmonth=solar_inst_endmonth+solar_comp_endmonth+solar_om_endmonth)
+solar_40k<-readRDS(here("final","solar1to1_final_monthly_spillover.RDS"))%>%group_by(id_municipio)%>%filter(!is.na(subclass_solar_40k))%>%
+  mutate(solar_jobs_endmonth=solar_inst_endmonth+solar_comp_endmonth+solar_om_endmonth)
+solar_20k<-readRDS(here("final","solar1to1_final_monthly_spillover.RDS"))%>%group_by(id_municipio)%>%filter(!is.na(subclass_solar_20k))%>%
+  mutate(solar_jobs_endmonth=solar_inst_endmonth+solar_comp_endmonth+solar_om_endmonth)
+treated<-unique(solar_20k$id_municipio[solar_20k$solar_treat_postmatch_20k==1])
+treated2<-unique(solar_40k$id_municipio[solar_40k$solar_treat_postmatch_40k==1])
+
+```
+
+Create regression formulas
+```{r}
+solar_20k_total <- xpd(solar_jobs_endmonth ~ d_solar_20k_pre37_bin+ d_solar_20k_pre.[35:1] +  solar_spillover_20k_MW + d_solar_20k_post.[1:24] + d_solar_20k_post25_bin | id_municipio + month^ano)
+solar_40k_total <- xpd(solar_jobs_endmonth ~ d_solar_40k_pre37_bin+ d_solar_40k_pre.[35:1]+  solar_spillover_40k_MW + d_solar_40k_post.[1:24] + d_solar_40k_post25_bin | id_municipio + month^ano)
+
+solar_20k_total2 <- xpd(total_endmonth ~ d_solar_20k_pre37_bin+ d_solar_20k_pre.[35:1] + solar_spillover_20k_MW + d_solar_20k_post.[1:24] + d_solar_20k_post25_bin | id_municipio + month^ano)
+solar_40k_total2 <- xpd(total_endmonth ~ d_solar_40k_pre37_bin+ d_solar_40k_pre.[35:1] +  solar_spillover_40k_MW + d_solar_40k_post.[1:24] + d_solar_40k_post25_bin | id_municipio + month^ano)
+
+solar_20k_inst <- xpd(solar_inst_endmonth ~ d_solar_20k_pre37_bin+ d_solar_20k_pre.[35:1] + solar_spillover_20k_MW + d_solar_20k_post.[1:24] + d_solar_20k_post25_bin | id_municipio + month^ano)
+solar_40k_inst <- xpd(solar_inst_endmonth ~ d_solar_40k_pre37_bin+ d_solar_40k_pre.[35:1] + solar_spillover_40k_MW + d_solar_40k_post.[1:24] + d_solar_40k_post25_bin | id_municipio + month^ano)
+
+wind_20k_total <- xpd(wind_jobs_endmonth ~ d_wind_20k_pre37_bin+ d_wind_20k_pre.[35:1] + wind_spillover_20k_MW + d_wind_20k_post.[1:24] + d_wind_20k_post25_bin | id_municipio + month^ano)
+wind_40k_total <- xpd(wind_jobs_endmonth ~ d_wind_40k_pre37_bin+ d_wind_40k_pre.[35:1]  + wind_spillover_40k_MW + d_wind_40k_post.[1:24] + d_wind_40k_post25_bin | id_municipio + month^ano)
+
+wind_20k_inst <- xpd(wind_inst_endmonth ~ d_wind_20k_pre37_bin+ d_wind_20k_pre.[35:1] + wind_spillover_20k_MW + d_wind_20k_post.[1:24] + d_wind_20k_post25_bin | id_municipio + month^ano)
+wind_40k_inst <- xpd(wind_inst_endmonth ~ d_wind_40k_pre37_bin+ d_wind_40k_pre.[35:1] + wind_spillover_40k_MW + d_wind_40k_post.[1:24] + d_wind_40k_post25_bin | id_municipio + month^ano)
+
+
+wind_20k_total2 <- xpd(total_endmonth ~ d_wind_20k_pre37_bin+ d_wind_20k_pre.[35:1] + wind_spillover_20k_MW + d_wind_20k_post.[1:24] + d_wind_20k_post25_bin | id_municipio + month^ano)
+wind_40k_total2 <- xpd(total_endmonth ~ d_wind_40k_pre37_bin+ d_wind_40k_pre.[35:1]  + wind_spillover_40k_MW + d_wind_40k_post.[1:24] + d_wind_20k_post25_bin | id_municipio + month^ano)
+
+```
+
+plots
+```{r}
+solar_spill<-extract_coeffs3(solar_20k_total,solar_40k_total,solar_20k,solar_40k,-37,-37,25,4,"within 20km", "20-40km", "solar", "solar_spillover20-40k.png", "a. Solar: sector-specific jobs")
+
+
+wind_spill<-extract_coeffs3(wind_20k_total,wind_40k_total,wind_20k,wind_40k,-37,-37,25,4,"within 20km", "20-40km", "wind", "windjobs_spillover20-40k.png", "b. Wind: sector-specifc jobs")
+
+library(patchwork)
+spill_total<-solar_spill+wind_spill
+ggsave(spill_total, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix", "spillover_20_40k.png"),units="px", width = 2000, height=1000)
+
+#Retrieve no. of observations
+solar_20<-feols(solar_20k_total, solar_20k, cluster = "id_municipio")
+solar_40<-feols(solar_40k_total, solar_40k, cluster = "id_municipio")
+summary(solar_20)
+summary(solar_40)
+wind_20<-feols(wind_20k_total, wind_20k, cluster = "id_municipio")
+wind_40<-feols(wind_40k_total, wind_40k, cluster = "id_municipio")
+summary(wind_20)
+summary(wind_40)
+
+
+#REPEAT WITH UNMATCHED DATA
+wind_spill_unmatched<-readRDS(here("final","wind_spillover_monthly_final_noweights.RDS"))%>%
+  mutate(wind_jobs_endmonth=wind_inst_endmonth+wind_om_endmonth+wind_comp_endmonth)
+solar_spill_unmatched<-readRDS(here("final","solar_spillover_monthly_final_noweights.RDS"))%>%
+  mutate(solar_jobs_endmonth=solar_inst_endmonth+solar_om_endmonth+solar_comp_endmonth)
+
+solar_spill_un<-extract_coeffs3(solar_20k_total,solar_40k_total,solar_spill_unmatched,solar_spill_unmatched,-37,-37,25,4,"within 20km", "20-40km","solar", "solar_spillover20-50k_unmatched.png", "Solar-related-jobs")
+
+wind_spill_un<-extract_coeffs3(wind_20k_total,wind_40k_total,wind_spill_unmatched,wind_spill_unmatched,-37,-37,25,4,"within 20km", "20-40km", "wind", "wind_spillover20-50k_unmatched.png", "wind-related-jobs")
+
+unmatched_total<-solar_spill_un+wind_spill_un
+ggsave(unmatched_total, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix", "spillover_20_40k_unmatched.png"),units="px", width = 2000, height=1000)
+```
+
+Spillovers in annual data
+```{r}
+solar_spill_annual<-readRDS(here("final", "solar_spillover_final_noweights.RDS"))%>%select(-c(3:10))
+wind_spill_annual<-readRDS(here("final", "wind_spillover_final_noweights.RDS"))%>%select(-c(3:10))
+solar_weights<-readRDS(here("final","solar_spillover_weights.RDS"))
+wind_weights<-readRDS(here("final","wind_spillover_weights.RDS"))
+
+solar_20k_annual<- solar_spill_annual %>%
+  left_join(solar_weights, by = "id_municipio")%>%filter(!is.na(subclass_solar_20k))
+solar_40k_annual<- solar_spill_annual %>%
+  left_join(solar_weights, by = "id_municipio")%>%filter(!is.na(subclass_solar_40k))
+solar_50k_annual<- solar_spill_annual %>%
+  left_join(solar_weights, by = "id_municipio")%>%filter(!is.na(subclass_solar_50k))
+
+wind_20k_annual<- wind_spill_annual %>%
+  left_join(wind_weights, by = "id_municipio")%>%filter(!is.na(subclass_wind_20k))
+wind_40k_annual<- wind_spill_annual %>%
+  left_join(wind_weights, by = "id_municipio")%>%filter(!is.na(subclass_wind_40k))
+wind_50k_annual<- wind_spill_annual %>%
+  left_join(wind_weights, by = "id_municipio")%>%filter(!is.na(subclass_wind_50k))
+```
+
+Regressions
+```{r}
+solar_20k_gdp <- xpd(pib_clean_constant2020_BRL ~ d_solar_20k_pre7_bin+ d_solar_20k_pre.[6:4]+ d_solar_20k_pre.[2:1] + solar_spillover_20k_MW + d_solar_20k_post.[1:3] + d_solar_20k_post4_bin | id_municipio +  ano)
+solar_40k_gdp <- xpd(pib_clean_constant2020_BRL ~ d_solar_40k_pre7_bin+ d_solar_40k_pre.[6:4]+ d_solar_20k_pre.[2:1] + solar_spillover_40k_MW + d_solar_40k_post.[1:3] + d_solar_40k_post4_bin | id_municipio +  ano)
+wind_20k_gdp <- xpd(pib_clean_constant2020_BRL ~ d_wind_20k_pre7_bin+ d_wind_20k_pre.[6:4]+ d_wind_20k_pre.[2:1] + wind_spillover_20k_MW + d_wind_20k_post.[1:5] + d_wind_20k_post6_bin | id_municipio +  ano)
+wind_40k_gdp <- xpd(pib_clean_constant2020_BRL ~ d_wind_40k_pre7_bin+ d_wind_40k_pre.[6:4]+ d_wind_20k_pre.[2:1] + wind_spillover_40k_MW + d_wind_40k_post.[1:5] + d_wind_40k_post6_bin | id_municipio +  ano)
+wind_50k_gdp <- xpd(pib_clean_constant2020_BRL ~ d_wind_50k_pre7_bin+ d_wind_50k_pre.[6:4]+ d_wind_20k_pre.[2:1] + wind_spillover_50k_MW + d_wind_50k_post.[1:5] + d_wind_50k_post6_bin | id_municipio +  ano)
+
+gdp_solar<-extract_coeffs3_annual(solar_20k_gdp,solar_40k_gdp,solar_20k_annual,solar_40k_annual,-7,-4,4,1,"within 20km of solar park", "20-40km of solar park", "solar", "gdp_spillover20-40k.png", "a. Solar: GDP in 2020 BRL")
+
+gdp_wind<-extract_coeffs3_annual(wind_20k_gdp,wind_40k_gdp,wind_20k_annual,wind_40k_annual,-7,-4,6,1,"within 20km of wind park", "20-40km of wind park", "wind", "gdp_spillover20-40k.png", "b. Wind: GDP in 2020 BRL")
+
+#Retrieve no. of observations
+solar_20_gdp<-feols(solar_20k_gdp, solar_20k_annual, cluster = "id_municipio")
+solar_40_gdp<-feols(solar_40k_gdp, solar_40k_annual, cluster = "id_municipio")
+summary(solar_20_gdp)
+summary(solar_40_gdp)
+
+wind_20_gdp<-feols(wind_20k_gdp, wind_20k_annual, cluster = "id_municipio")
+wind_40_gdp<-feols(wind_40k_gdp, wind_40k_annual, cluster = "id_municipio")
+summary(wind_20_gdp)
+summary(wind_40_gdp)
+
+
+solar_20k_total_tax_fee_BRL2020 <- xpd(pib_clean_constant2020_BRL ~ d_solar_20k_pre7_bin+ d_solar_20k_pre.[6:4]+ d_solar_20k_pre.[2:1] + solar_spillover_20k_MW + d_solar_20k_post.[1:3] + d_solar_20k_post4_bin | id_municipio +  ano)
+solar_40k_total_tax_fee_BRL2020 <- xpd(pib_clean_constant2020_BRL ~ d_solar_40k_pre7_bin+ d_solar_40k_pre.[6:4]+ d_solar_20k_pre.[2:1] + solar_spillover_40k_MW + d_solar_40k_post.[1:3] + d_solar_40k_post4_bin | id_municipio +  ano)
+solar_50k_total_tax_fee_BRL2020 <- xpd(pib_clean_constant2020_BRL ~ d_solar_50k_pre7_bin+ d_solar_50k_pre.[6:4]+ d_solar_20k_pre.[2:1] + solar_spillover_50k_MW + d_solar_50k_post.[1:3] + d_solar_50k_post4_bin | id_municipio +  ano)
+wind_20k_total_tax_fee_BRL2020 <- xpd(pib_clean_constant2020_BRL ~ d_wind_20k_pre7_bin+ d_wind_20k_pre.[6:4]+ d_wind_20k_pre.[2:1] + wind_spillover_20k_MW + d_wind_20k_post.[1:5] + d_wind_20k_post6_bin | id_municipio +  ano)
+wind_40k_total_tax_fee_BRL2020 <- xpd(pib_clean_constant2020_BRL ~ d_wind_40k_pre7_bin+ d_wind_40k_pre.[6:4]+ d_wind_20k_pre.[2:1] + wind_spillover_40k_MW + d_wind_40k_post.[1:5] + d_wind_40k_post6_bin | id_municipio +  ano)
+wind_50k_total_tax_fee_BRL2020 <- xpd(pib_clean_constant2020_BRL ~ d_wind_50k_pre7_bin+ d_wind_50k_pre.[6:4]+ d_wind_20k_pre.[2:1] + wind_spillover_50k_MW + d_wind_50k_post.[1:5] + d_wind_50k_post6_bin | id_municipio +  ano)
+
+tax_spill_solar<-extract_coeffs3_annual(solar_20k_total_tax_fee_BRL2020,solar_40k_total_tax_fee_BRL2020,solar_20k_annual,solar_40k_annual,-7,-4,4,1,"within 20km", "20-40km", "solar", "taxes_spillover20-40k.png", "c. Solar: Tax receipts")
+
+tax_spill_wind<-extract_coeffs3_annual(wind_20k_total_tax_fee_BRL2020,wind_40k_total_tax_fee_BRL2020,wind_20k_annual,wind_40k_annual,-7,-4,6,1,"within 20km", "20-40km", "wind", "taxes_spillover20-40k.png", "d. Wind: Tax receipts")
+
+#joint graph
+all_spills_annual<-gdp_solar+gdp_wind+tax_spill_solar+tax_spill_wind
+ggsave(all_spills_annual, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix", "spillover_20_40k_annual.png"),units="px", width = 2000, height=2000)
+
+```
+

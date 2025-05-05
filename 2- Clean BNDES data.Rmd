@@ -1,0 +1,697 @@
+---
+title: "2- clean BNDES data"
+author: "Fabian Scheifele"
+date: "2023-03-09"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+1. load relevant Packages
+```{r setup, include=FALSE}
+suppressMessages(memory.limit(size = NA))
+
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","knitr","here", "tidyverse" , "anytime" , "data.table", "corrplot", "naniar", "fuzzyjoin","expss", "janitor","readr", "data.table", "labelled", "countrycode","grep", "economiccomplexity","xtable","ggbump", "cowplot","ggrepel", "survival"))
+
+
+`%notin%` <- Negate(`%in%`)
+```
+
+2. load raw datasets
+```{r}
+non_automatic<-read_excel(here("raw","naoautomaticas_31122022.xlsx"), skip = 4)
+```
+
+
+7. BNDES: Classifying  data by type of generation
+```{r}
+#remove full duplicates
+non_automatic<-non_automatic%>%distinct()
+
+
+# Colomn Renaming and adding  
+names(non_automatic)<-str_replace_all(names(non_automatic), c(" " = "." , "," = "", "-" = "", "ê" = "e"))
+#colnames(auction_generation_final)[colnames(auction_generation_final) == "CodMunicipio"] ="municipality_code"
+
+#Filter only electricity related 
+non_automatic_electr<-non_automatic %>% filter(
+  str_detect(Subsetor.CNAE..nome, "GERACAO DE ENERGIA ELETRICA"))
+
+#Add generation_type_bndes and source_type_bndes columns  
+non_automatic_electr[ , 'generation_type_bndes'] <- NA
+non_automatic_electr[ , 'source_type_bndes'] <- NA
+
+#Column renaming
+solar_wind_electr <- non_automatic_electr %>% 
+  rename(
+    contract_number = Número.do.contrato, municipality = Município, municipality_code = Município..código,  
+    Subsetor_CNAE_name = Subsetor.CNAE..nome, project_description = Descrição.do.projeto, 
+    Accred_fin_institute = Instituição.Financeira.Credenciada, contract_value = "Valor.contratado..R$", 
+    disbursed_value = "Valor.desembolsado.R$" , grace_period_months = 14, 
+    repayment_period_months = 15, Contract.status = 34 )
+
+#Understand at what level data is distinct: 
+solar_wind_electr_distinct<-solar_wind_electr%>%distinct(Cliente, Produto, contract_number, contract_value,disbursed_value,Juros,Accred_fin_institute, .keep_all=TRUE)
+#at the above level the observations are distinct:
+#This means each row represent a part of loan that has a different client, product, contract/disbursement value, interest rate and financial institutions through which the credit is processed.
+#We can aggregate at the Client, Product, Contract_Number level
+
+dups<-solar_wind_electr%>%group_by(Cliente, Produto, contract_number, contract_value, disbursed_value, grace_period_months,repayment_period_months, Juros,Contract.status)%>%
+  mutate(n_rows=n())%>%
+  filter(n_rows>1)
+
+dups<-duplicated(solar_wind_electr_distinct)
+
+test<-solar_wind_electr%>%distinct(project_description, contract_number)
+
+
+# Filling in Generation and Source Type
+
+for(i in 1:nrow(solar_wind_electr)){
+  if (str_detect(solar_wind_electr$Subsetor_CNAE_name[i], "GERACAO DE ENERGIA ELETRICA - SOLAR")){
+  solar_wind_electr$generation_type_bndes[i] = "UFV"
+  solar_wind_electr$source_type_bndes[i] = "Solar"
+}
+else if (str_detect(solar_wind_electr$Subsetor_CNAE_name[i], "GERACAO DE ENERGIA ELETRICA - EOLICA")){
+  solar_wind_electr$generation_type_bndes[i] = "EOL"
+  solar_wind_electr$source_type_bndes[i] = "Eólica"
+} 
+else if (str_detect(solar_wind_electr$Subsetor_CNAE_name[i], "GERACAO DE ENERGIA ELETRICA - CO-GERACAO CANA-DE-ACU")){
+  solar_wind_electr$generation_type_bndes[i] = "UTE"
+  solar_wind_electr$source_type_bndes[i] = "Biomassa"
+  }
+  else if (str_detect(solar_wind_electr$Subsetor_CNAE_name[i], "GERACAO DE ENERGIA ELETRICA - HIDRELETRICA")) {
+  solar_wind_electr$generation_type_bndes[i] = "UHE"
+  solar_wind_electr$source_type_bndes[i] = "Hídrica"
+  }  
+    else if  (str_detect(solar_wind_electr$Subsetor_CNAE_name[i], "GERACAO DE ENERGIA ELETRICA - PCH")){
+  solar_wind_electr$generation_type_bndes[i] = "PCH"
+  solar_wind_electr$source_type_bndes[i] = "Hídrica"
+   } 
+  else if (str_detect(solar_wind_electr$Subsetor_CNAE_name[i], "GERACAO DE ENERGIA ELETRICA - CO-GERACAO GAS") || str_detect(solar_wind_electr$Subsetor_CNAE_name[i], "GERACAO DE ENERGIA ELETRICA - TERMICA")){
+  solar_wind_electr$generation_type_bndes[i] = "UTE"
+  solar_wind_electr$source_type_bndes[i] = "Fóssil"
+  }   
+   
+   else if (str_detect(solar_wind_electr$Subsetor_CNAE_name[i], "GERACAO, TRANSMISSAO E DISTRIBUICAO DE ENERGIA ELETRICA")){
+  solar_wind_electr$generation_type_bndes[i] = "Transm"
+  solar_wind_electr$source_type_bndes[i] = "Transmission/distribution"
+   } 
+   else if (str_detect(solar_wind_electr$Subsetor_CNAE_name[i], "GERACAO DE ENERGIA ELETRICA - NUCLEAR"))    {
+  solar_wind_electr$generation_type_bndes[i] = "UTN"
+  solar_wind_electr$source_type_bndes[i] = "Nuclear"
+   }
+  else if ((solar_wind_electr$Subsetor_CNAE_name[i] == "GERACAO DE ENERGIA ELETRICA") || (solar_wind_electr$Subsetor_CNAE_name[i] == "ELETRICA - OUTRAS FONTES ALTERNAT") || (solar_wind_electr$Subsetor_CNAE_name[i] == "GERACAO DE ENERGIA ELETRICA - CO-GERACAO EXCLUSIVE C") ||
+ (solar_wind_electr$Subsetor_CNAE_name[i] == "GERACAO DE ENERGIA ELETRICA - OUTRAS FONTES ALTERNAT")) { 
+    solar_wind_electr$generation_type_bndes[i] = "other"
+    solar_wind_electr$source_type_bndes[i] = "other"
+    }
+}
+
+#
+#Check how many the loop found
+sum(is.na(solar_wind_electr$generation_type_bndes))/length(solar_wind_electr$generation_type_bndes)
+#now 0% NAs (before 13%) (I added the PCH and and "GERACAO DE ENERGIA ELETRICA - OUTRAS FONTES ALTERNAT" to the loop, now finds all)
+```
+
+8. BNDES: Grouping quantitative information by contract number
+```{r}
+##############
+#add project discription, municipality, source and type to the data frame
+solar_wind_electr_grouped <- solar_wind_electr%>%group_by(contract_number)%>%summarise(total_contract_sum = sum(contract_value), earliest_contract_date = min(Data.da.contratação), latest_contract_date = max(Data.da.contratação), total_disbursed= sum(disbursed_value),
+Avg_interest = mean(Juros), Avg_interest2 = mean(grace_period_months), 
+Avg_interest3 =  mean(repayment_period_months)
+) %>% as.data.frame()%>%arrange(contract_number)
+
+```
+
+8. BNDES: Extracting name of wind/solar parks/complexes
+```{r}
+# get data only for solar and wind stations
+SW_station_name <-
+  solar_wind_electr %>% filter(generation_type_bndes %in% c("UFV", "EOL")) %>%
+  distinct(project_description, municipality_code, municipality, .keep_all = TRUE)
+
+#Extracting the MW from the project description
+######################################
+SW_station_name<-SW_station_name %>% 
+  dplyr::mutate(bndes_mw = stringr::str_extract(project_description, "\\d+[,.]?\\d*\\s?(?=MW)")) %>% 
+  unnest(bndes_mw, keep_empty = TRUE)
+
+#add new colomns: station_name, amountInPark, auction, complex  for extracting data from project desciption
+SW_station_name[, 'station_name'] <- NA
+SW_station_name[, 'amountInPark'] <- NA
+SW_station_name[, 'auction'] <- NA
+SW_station_name[, 'complex'] <- NA
+
+
+#extract the power plant name using regular expressions
+ 
+for (i in 1:nrow(SW_station_name)) {
+  #if park/station consists out of multiple stations we extract the number if number is mentioned
+  if (str_detect(SW_station_name$project_description[i], "UM")) {
+    SW_station_name$amountInPark[i] <- 1
+  }
+  if (str_detect(SW_station_name$project_description[i], "DUAS")) {
+    SW_station_name$amountInPark[i] <- 2
+  }
+  if (str_detect(SW_station_name$project_description[i], "TRES")) {
+    SW_station_name$amountInPark[i] <- 3
+  }
+  if (str_detect(SW_station_name$project_description[i], "QUATRO") ||
+      str_detect(SW_station_name$project_description[i], "quatro")) {
+    SW_station_name$amountInPark[i] <- 4
+  }
+  if (str_detect(SW_station_name$project_description[i], "CINCO")) {
+    SW_station_name$amountInPark[i] <- 5
+  }
+  if (str_detect(SW_station_name$project_description[i], "SEIS")) {
+    SW_station_name$amountInPark[i] <- 6
+  }
+  if (str_detect(SW_station_name$project_description[i], "SETE")) {
+    SW_station_name$amountInPark[i] <- 7
+  }
+  if (str_detect(SW_station_name$project_description[i], "QUATORZE")) {
+    SW_station_name$amountInPark[i] <- 14
+  }
+  if (str_detect(SW_station_name$project_description[i], "OITO")) {
+    SW_station_name$amountInPark[i] <- 8
+  }
+  if (str_detect(SW_station_name$project_description[i], "NOVE") &&
+      !str_detect(SW_station_name$project_description[i], "NOVEMBER")) {
+    SW_station_name$amountInPark[i] <- 9
+  }
+  if (str_detect(SW_station_name$project_description[i], "DEZOITO")) {
+    SW_station_name$amountInPark[i] <- 18
+  }
+  if (str_detect(SW_station_name$project_description[i], "ONZE")) {
+    SW_station_name$amountInPark[i] <- 11
+  }
+  if (str_detect(SW_station_name$project_description[i], "DOZE")) {
+    SW_station_name$amountInPark[i] <- 12
+  }
+  if (str_detect(SW_station_name$project_description[i], "DEZ")) {
+    SW_station_name$amountInPark[i] <- 10
+  }
+  
+  # find a name of the complex
+  
+  if (str_detect(SW_station_name$project_description[i], "COMPLEXO EOLICO") ||
+      str_detect(SW_station_name$project_description[i], "COMPLEXO EÓLICO") ||
+      str_detect(SW_station_name$project_description[i], "COMPLEXO") ||
+      str_detect(SW_station_name$project_description[i], "Complexo Eólico")) {
+    SW_station_name$complex[i] <-
+      str_extract(
+        SW_station_name$project_description[i],
+        "(?<=COMPLEXO EOLICO |
+ COMPLEXO EÓLICO |COMPLEXO SOLAR |Complexo Eólico ).*?(?=, COMPOSTO|COMPOSTO|\\,|, COM| COM|\\.| composto )"
+      )
+    if (is.na(SW_station_name$complex[i])) {
+      SW_station_name$complex[i] <-
+        str_extract(
+          SW_station_name$project_description[i],
+          "(?<=COMPLEXO ).*?(?=, COMPOSTO|COMPOSTO|,|, COM| COM|\\.)"
+        )
+    }
+  }
+  
+  # extract name of the auction
+  SW_station_name$auction[i] <-
+    str_extract(
+      SW_station_name$project_description[i],
+      "(?<=OBJETO DO LEILAO ).*?(?=, COM|\\.|PELO|, \\w)"
+    )
+  
+  #remove EÓLICO from complex and station name. DOESNT WORK
+  if (str_detect(SW_station_name$project_description[i], "AQUISIÇÃO ")) {
+    SW_station_name$complex[i] <-
+      str_extract(
+        SW_station_name$project_description[i],
+        "(?<=COMPLEXO EÓLICO |Complexo Eólico ).*?(?=, COM| COM|, | COMPOSTO)"
+      )
+    next
+  }
+  
+  
+  # get the name of the PHOTOVOLTAIC PLANTS
+  
+  if (str_detect(SW_station_name$project_description[i],
+                 "USINAS FOTOVOLTAICAS") ||
+      str_detect(SW_station_name$project_description[i],
+                 "USINAS SOLARES FOTOVOLTAICAS")) {
+    
+    #amount of stations in the complex
+    SW_station_name$amountInPark[i] <-
+      str_extract(SW_station_name$project_description[i],
+                  "\\d+(?=\\sUSINAS FOTOVOLTAICAS)")
+    
+    
+    SW_station_name$station_name[i] <-
+      str_extract(
+        SW_station_name$project_description[i],
+        "(?<=USINAS FOTOVOLTAICAS |USINAS FOTOVOLTAICAS (UFVS) |USINAS FOTOVOLTAICAS DO ).*?(?=, LOCALIZADAS|COM|,)"
+      )
+  }
+  
+  # Get name of the wind park
+  
+  if (str_detect(SW_station_name$project_description[i], "PARQUE")) {
+    SW_station_name$station_name[i] <-
+      str_extract(
+        SW_station_name$project_description[i],
+        "(?<=PARQUE EOLICO |PARQUE EOLICOS |PARQUES EOLICOS | ENERGIA EOLICA|PROJETO EOLICO ).*?(?=, COM|COM|,|\\.|/| QUE INTEGRAM O)"
+      )
+    next
+  }
+  
+   # Get name of the wind power plant 
+
+  if (str_detect(SW_station_name$project_description[i], "CENTRAL")) {
+    SW_station_name$station_name[i] <-
+      str_extract(
+        SW_station_name$project_description[i],
+        "(?<=CENTRAL GERADORA EOLICA |CENTRAL EOLICA |CENTRAL GERADORA EÓLICA ).*?(?= PELA|, COM|COM|\\.)"
+      )
+    next
+  }
+  
+  if (str_detect(SW_station_name$project_description[i], "DA UEE")) {
+    SW_station_name$station_name[i] <-
+      str_extract(SW_station_name$project_description[i],
+                  "(?<=DA UEE ).*?(?=, COM|COM|,)")
+    next
+  }
+  
+  if (str_detect(SW_station_name$project_description[i], " DA UNIDADE")) {
+    SW_station_name$station_name[i] <-
+      str_extract(
+        SW_station_name$project_description[i],
+        "(?<=A UNIDADE DE ENERGIA EOLICA ).*?(?=, COM|COM|,)"
+      )
+    next
+  }
+  
+  
+  
+  if (str_detect(SW_station_name$project_description[i], "USINA FOTOVOLTAICA") ||
+      str_detect(SW_station_name$project_description[i],
+                 "USINA DE ENERGIA EOLICA") ||
+      str_detect(SW_station_name$project_description[i], "USINA EOLICA") ||
+      str_detect(SW_station_name$project_description[i], "DA USINA")) {
+    SW_station_name$station_name[i] <-
+      str_extract(
+        SW_station_name$project_description[i],
+        "(?<=USINA DE ENERGIA EOLICA |USINA FOTOVOLTAICA |USINA EOLICA | DA USINA EOLICA ).*?(?=, COM|COM|, |DE)"
+      )
+    if (SW_station_name$station_name[i] == " " ||
+        is.na(SW_station_name$station_name[i])) {
+      SW_station_name$station_name[i] <- SW_station_name$complex[i]
+    }
+    next
+  }
+  
+}
+
+#Cleaning results 
+for (i in 1:nrow(SW_station_name)) {
+  false_extr <-
+    str_extract(SW_station_name$station_name[i], "DE \\d\\d")
+  if (!is.na(false_extr)) {
+    SW_station_name$station_name[i] <- NA
+  }
+  
+  if (!is.na(SW_station_name$station_name[i])) {
+    if (str_detect(SW_station_name$station_name[i], "EÓLICO")) {
+      SW_station_name$station_name[i] <-
+        gsub("EÓLICO ", "", SW_station_name$station_name[i])
+    }
+    if ((SW_station_name$station_name[i] == "(268") ||
+        (SW_station_name$station_name[i] == "(CGES)") ||
+        (SW_station_name$station_name[i] == "(UFVS)") ||
+        (SW_station_name$station_name[i] == "DO")) {
+      SW_station_name$station_name[i] <- NA
+    }
+  }
+  if (is.na(SW_station_name$station_name[i]) &&
+      !is.na(SW_station_name$complex[i])) {
+    SW_station_name$station_name[i] <- SW_station_name$complex[i]
+  }
+  
+}
+
+sum(is.na(SW_station_name$station_name))
+#add id based on row number
+SW_station_name<-SW_station_name%>% mutate(park_id = row_number())
+
+#Park_id = 67 project description. consists of 2 power plants and 2 municipalities, that is why it has to be manual split or 4 rows will be created 
+new_row <- SW_station_name[SW_station_name$park_id == 67, ]
+SW_station_name <- rbind(SW_station_name, new_row)
+
+#7 stations in one project description (SANTA BRIGIDA I - VII)
+santa_brigida_station <- SW_station_name[SW_station_name$park_id == 289, ]
+SW_station_name <- rbind(SW_station_name, santa_brigida_station, santa_brigida_station, santa_brigida_station, santa_brigida_station, santa_brigida_station, santa_brigida_station)
+
+
+#refresh row_id
+SW_station_name<-SW_station_name%>% mutate(park_id = row_number())
+
+#manual station name extracting
+SW_station_name$station_name[SW_station_name$park_id==9]<-"VENTOS DE SANTA LUZIA 11,VENTOS DE SANTA LUZIA 12,VENTOS DE SANTA LUZIA 13,VENTOS DE SANTO ANTONIO 01"
+SW_station_name$station_name[SW_station_name$park_id==17]<-"ALEX"
+SW_station_name$complex[SW_station_name$park_id==17]<-"ALEX"
+SW_station_name$station_name[SW_station_name$park_id==19]<-"VENTOS DE SAO JANUARIO 16,VENTOS DE SAO JANUARIO 18"
+SW_station_name <- SW_station_name[SW_station_name$park_id != 25, ]
+SW_station_name$station_name[SW_station_name$park_id==29]<-"VENTOS DE SAO LUCIO I"
+SW_station_name$station_name[SW_station_name$park_id==32]<-SW_station_name$complex[SW_station_name$park_id==32]
+SW_station_name$station_name[SW_station_name$park_id==34]<-NA
+SW_station_name$station_name[SW_station_name$park_id==47]<-NA
+SW_station_name$complex[SW_station_name$park_id==47]<-NA
+SW_station_name$station_name[SW_station_name$park_id==49]<-"PEDRANOPOLIS 1,PEDRANOPOLIS 2,PEDRANOPOLIS 3"
+SW_station_name$station_name[SW_station_name$park_id==52]<-"UFV ARAXA I,UFV ARAXA II" 
+SW_station_name$station_name[SW_station_name$park_id==59]<-"CUTIA,BENTO MIGUEL"
+SW_station_name$station_name[SW_station_name$park_id==61]<-"GUIMARANIA I,GUIMARANIA II"
+SW_station_name$station_name[SW_station_name$park_id==67]<-"CUTIA"
+SW_station_name$station_name[SW_station_name$park_id==72]<-"XIQUE XIQUE"
+SW_station_name$station_name[SW_station_name$park_id==107]<-"AVENTURA I,JERICO,AROEIRA,UMBUZEIROS"
+SW_station_name$station_name[SW_station_name$park_id==166]<-"BONS VENTOS CACIMBAS 2,BONSVENTOS CACIMBAS 3,BONS VENTOS CACIMBAS 4,BONS VENTOS CACI MBAS 5,BONS VENTOS CACIMBAS 7"
+SW_station_name$station_name[SW_station_name$park_id==167]<-"CALANGO,SANTANA 1,SANTANA 2"
+SW_station_name$station_name[SW_station_name$park_id==168]<-"Serra das Vacas"
+SW_station_name$station_name[SW_station_name$park_id==194]<-"SÃO MIGUEL DO GOSTOSO"
+SW_station_name$complex[SW_station_name$park_id==194]<-"SÃO MIGUEL DO GOSTOSO"
+SW_station_name$station_name[SW_station_name$park_id==195]<-"ENERGIA DOS VENTOS I,ENERGIA DOS VENTOS II,ENERGIA DOS VENTOS III,ENERGIA DOS VENTOS IV, ENERGIA DOS VENTOS X"
+SW_station_name$station_name[SW_station_name$park_id==204]<-"CAETITÉ"
+SW_station_name$complex[SW_station_name$park_id==204]<-"CAETITÉ"
+SW_station_name$station_name[SW_station_name$park_id==234]<-"VENTOS DO ARARIPE"
+SW_station_name$complex[SW_station_name$park_id==234]<-"VENTOS DO ARARIPE"
+SW_station_name$station_name[SW_station_name$park_id==253]<-"ACARI,ARENA,ALBUQUERQUE,ANEMOI,APELIOTES"
+SW_station_name$station_name[SW_station_name$park_id==254]<-"ACARI,ARENA,ALBUQUERQUE,ANEMOI,APELIOTES"
+SW_station_name$station_name[SW_station_name$park_id==255]<-"ACARI,ARENA,ALBUQUERQUE,ANEMOI,APELIOTES"
+SW_station_name$station_name[SW_station_name$park_id==260]<-"CAETÉS"
+SW_station_name$complex[SW_station_name$park_id==260]<-"CAETÉS"
+SW_station_name$station_name[SW_station_name$park_id==261]<-"PONTAL 3B"
+SW_station_name$station_name[SW_station_name$park_id==262]<-"MALHADINHA I"
+SW_station_name$station_name[SW_station_name$park_id==276]<-NA
+SW_station_name$station_name[SW_station_name$park_id==289]<-"SANTA BRIGIDA I"
+SW_station_name$station_name[SW_station_name$park_id==320]<-NA
+SW_station_name$station_name[SW_station_name$park_id==422]<-"OSORIO II"
+SW_station_name$station_name[SW_station_name$park_id==423]<-"PALMARES"
+SW_station_name$station_name[SW_station_name$park_id==424]<-"FAZENDA SANGRADOURO II,FAZENDA SANGRADOURO III"
+SW_station_name$station_name[SW_station_name$park_id==462]<-"BENTO MIGUEL"
+SW_station_name$station_name[SW_station_name$park_id==463]<-"SANTA BRIGIDA II"
+SW_station_name$station_name[SW_station_name$park_id==464]<-"SANTA BRIGIDA III"
+SW_station_name$station_name[SW_station_name$park_id==465]<-"SANTA BRIGIDA IV"
+SW_station_name$station_name[SW_station_name$park_id==466]<-"SANTA BRIGIDA V"
+SW_station_name$station_name[SW_station_name$park_id==467]<-"SANTA BRIGIDA VI"
+SW_station_name$station_name[SW_station_name$park_id==468]<-"SANTA BRIGIDA VII"
+SW_station_name$station_name[SW_station_name$park_id==423]<-"PALMARES,FAZENDA ROSARIO I,FAZENDA ROSARIO II,FAZENDA ROSARIO III"
+
+SW_station_name[, 'state'] <- NA
+
+#municipality extracting 
+for (i in 1:nrow(SW_station_name)) {
+  if (SW_station_name$municipality_code[i] == 9999999 || SW_station_name$municipality_code[i] == 0000000) {
+    SW_station_name$state[i] <-
+      str_extract(
+        SW_station_name$project_description[i],
+        "(?<=NOS ESTADOS DE |NO ESTADO DE |NO ESTADO DO|NO ESTADODO ).*?(?=, COM| COM|, OBJETO|, E|\\.|E OUT|E SISTEMA )"
+      )
+    SW_station_name$municipality[i] <-
+      str_extract(
+        SW_station_name$project_description[i],
+        "(?<=MUNICIPIOS DE |LOCALIZADO NA |NO INTERIOR DA |LOCALIZADO NO |MUNICIPIO DE |MUNICIPIOSDE ).*?(?=, COM| COM|, OBJETO|, E SISTEMA|\\.|E OUT|, DO|TODOSNO ESTADO|, ESTADO|, NO ESTADO| NO ESTADO|, AMBOS)"
+      )
+  }
+   SW_station_name$municipality[i]<-gsub(" E ", ",", SW_station_name$municipality[i])
+ 
+}
+
+
+#manual municilality extracting 
+SW_station_name$municipality[SW_station_name$park_id==6]<-"PONGAI - SP,CAFELANDIA - SP,MATA ROMA - MA"
+SW_station_name$municipality[SW_station_name$park_id==18]<-"Morro Do Chapéu  -  BA" #and others 
+SW_station_name$municipality[SW_station_name$park_id==23]<-"CAICARA DO RIO DO VENTO, LAJES,SAO TOME - RN"
+SW_station_name$municipality[SW_station_name$park_id==26]<-"CAICARA DO RIO DO VENTO, LAJES,SAO TOME - RN"
+SW_station_name$municipality[SW_station_name$park_id==27]<-"CAICARA DO RIO DO VENTO, LAJES,SAO TOME - RN"
+SW_station_name$municipality[SW_station_name$park_id==28]<-"CAICARA DO RIO DO VENTO, LAJES,SAO TOME - RN"
+SW_station_name$municipality[SW_station_name$park_id==30]<-"ITAGUACU DA BAH IA, XIQUE-XIQUE,GENTIO DO OURO - BA"
+SW_station_name$municipality[SW_station_name$park_id==67]<-"PEDRA GRANDE"
+SW_station_name$municipality[SW_station_name$park_id==96]<-"SANTA LUZIA,SAO JOSE DO SABUGI - PB"
+SW_station_name$municipality[SW_station_name$park_id==107]<-"TOUROS,JANDAIRA"
+SW_station_name$municipality[SW_station_name$park_id==1]<-"SAO MIGUEL DO GOSTOSO,PARAZINHO,TOURO- RN"
+SW_station_name$municipality[SW_station_name$park_id==385]<-"BODO,SANTANA DO MATO - RN"
+SW_station_name$municipality[SW_station_name$park_id==387]<-"BODO,LAGOA NOVA - RN"
+SW_station_name$municipality[SW_station_name$park_id==388]<-"BODO,SANTANA DO MATO - RN"
+SW_station_name$municipality[SW_station_name$park_id==389]<-"BODO,LAGOA NOVA - RN"
+SW_station_name$municipality[SW_station_name$park_id==390]<-"BODO,LAGOA NOVA - RN"
+SW_station_name$municipality[SW_station_name$park_id==462]<-"SAO BENTO DO NORTE"
+
+
+
+#data cleaning, to remove subset cells with blanc spaces with NA 
+SW_station_name["station_name"][SW_station_name["station_name"] == ''] <- NA
+SW_station_name["station_name"][SW_station_name["station_name"] == ' '] <- NA
+
+#data cleaning, remove brackets
+SW_station_name$municipality<-gsub("\\(RN\\)", "- RN", SW_station_name$municipality)
+SW_station_name$municipality<-gsub("\\(BA\\)", "- BA", SW_station_name$municipality)
+```
+
+
+9.Transfrom BNDES data to the long format
+```{r}
+#Separate the power plant names variable  here
+SW_station <- SW_station_name %>% separate(station_name, into = c('Station_1', 'Station_2', 'Station_3','Station_4', 'Station_5'), sep = ",")
+
+#Bring the power plant names into long format
+SW_station_name_long<-pivot_longer(SW_station, cols = c('Station_1', 'Station_2', 'Station_3', 'Station_4', 'Station_5'), 
+                               names_to = "wide_var", values_to = "station_name")
+
+#need to throw out the empty rows that were added, delete the "wide var" creation by the long pivot and then full distinct
+SW_station_name_long<-SW_station_name_long%>%select(-wide_var)
+SW_station_name_long<-SW_station_name_long%>%distinct()
+
+#trim white space
+SW_station_name_long$station_name<-str_trim(SW_station_name_long$station_name)
+SW_station_name_long$municipality<-str_trim(SW_station_name_long$municipality)
+#replace empty string with NA
+SW_station_name_long["station_name"][SW_station_name_long["station_name"] == ''] <- NA
+SW_station_name_long<-SW_station_name_long%>%group_by(park_id)%>%mutate(rows=n(), nas=sum(is.na(station_name)), ratio=(nas/rows))%>%ungroup()
+
+#whereever there is an station name without NA delete this row but keep NA where it is sole entry
+station_1<-SW_station_name_long%>%filter(ratio==1)
+station_2<-SW_station_name_long%>%filter(ratio<1)
+station_2<-station_2%>%filter(!is.na(station_name))
+SW_station_name_long<-bind_rows(station_1, station_2)%>%select(-ratio,-nas,-rows)
+
+
+#columns that you provided were not sufficient
+SW_powerPlants <- SW_station_name_long %>% separate(municipality, into = c('mun_1', 'mun_2', 'mun_3', 'mun_4', 'mun_5'), sep = ",")
+
+#Bring the municipality names into long format
+SW_powerPlants_long<-pivot_longer(SW_powerPlants, cols = c('mun_1', 'mun_2', 'mun_3', 'mun_4', 'mun_5'), 
+                                names_repair = "unique", values_to = "municipality")
+
+#need to throw out the empty rows that were added, delete the "wide var" creation by the long pivot and then full distinct
+SW_powerPlants_long<-SW_powerPlants_long%>%select(-name)
+SW_powerPlants_long<-SW_powerPlants_long%>%distinct()
+SW_powerPlants_long$municipality<-str_trim(SW_powerPlants_long$municipality)
+
+#replace empty string with NA
+SW_powerPlants_long["municipality"][SW_powerPlants_long["municipality"] == ''] <- NA
+SW_powerPlants_long["municipality"][SW_powerPlants_long["municipality"] == ' '] <- NA
+SW_powerPlants_long<-SW_powerPlants_long%>%group_by(park_id)%>%mutate(rows=n(), nas=sum(is.na(municipality)), ratio=(nas/rows))%>%ungroup()
+plant_1<-SW_powerPlants_long%>%filter(ratio==1)
+plant_2<-SW_powerPlants_long%>%filter(ratio<1)
+plant_2<-plant_2%>%filter(!is.na(municipality))
+SW_powerPlants_long<-bind_rows(plant_1, plant_2)%>%group_by(park_id)%>%mutate(no_rows=n())%>%ungroup()
+
+test_distinct<-SW_powerPlants_long%>%distinct(Cliente, municipality,station_name,contract_number, park_id)%>%group_by(park_id)%>%mutate(no_rows=n())
+
+```
+
+10.Prepare BNDES data for merge
+```{r}
+#add ID for merge
+SW_powerPlants_long<-SW_powerPlants_long%>%mutate(bndes_id=row_number())
+
+#Add municipality code instead of 999999 or 000000
+
+#SAO JOSE DO SABUGI - PB
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==53]<-2514701
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==58]<-2514701
+
+#Paulistana
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==38]<-2207801	
+
+#Curral Novo Do Piauí 
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==41]<-2203271
+
+#ARARIPINA
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==46]<-2601102
+
+#OURICURI
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==47]<-2609907
+
+
+#Sao mamede
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==54]<-2514909
+
+#AREIA DE BARAUNAS
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==55]<-2501153
+
+#Limoeiro Do Norte
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==145]<-2307601
+
+#TABULEIRO DO NORTE
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==146]<-2313104
+
+#Morro Do Chapéu  -  BA
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==147]<-2921708
+
+
+#SAO MIGUEL DO GOSTOSO
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==65]<-2412559
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==23]<-2412559
+
+#PARAZINHO
+#SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==62]<-2408805
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==66]<-2408805
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==69]<-2408805
+
+#	Touros
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==231]<-2414407
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==233]<-2414407
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==235]<-2414407
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==237]<-2414407
+
+#JANDAIRA
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==178]<-2405108
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==232]<-2405108
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==234]<-2405108
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==236]<-2405108
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==238]<-2405108
+
+#Bodo
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==465]<-2401651
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==468]<-2401651
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==470]<-2401651
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==472]<-2401651
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==474]<-2401651
+
+
+#Santana do Mato
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==466]<-2411403
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==471]<-2411403
+
+#LAGOA NOVA -RN
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==469]<-2406502
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==473]<-2406502
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==475]<-2406502
+
+#Pongai- SP
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==30]<-3540101
+
+#cafelandia - SP
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==31]<-3508801
+
+#Mata Roma
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==32]<-2106409
+
+#XIQUE-XIQUE
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==162]<-2933604
+
+#GENTIO DO OURO - BA
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==163]<-2911303
+
+#Pedro Avelino
+#SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==164]<-2409704
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==180]<-2409704
+
+#UMBARANAS
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==177]<-2932457
+
+#SENTO SE
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==176]<-2930204
+
+#pedra Grande
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==192]<-2409506
+
+#Macau
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==456]<-2407203
+
+#GALINHOS
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==457]<-2404101
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==458]<-2404101
+
+#São Bento Do Norte  -  RN
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==538]<-2411601
+
+
+#Bahia
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==34]<-2915353
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==161]<-2915353
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==305]<-2915353
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==307]<-2915353
+
+#Lajes
+#SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==29]<-2406700
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==149]<-2406700
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==152]<-2406700
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==155]<-2406700	
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==160]<-2406700	
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==164]<-2406700	
+
+#BETANIA DO PIAUI
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==37]<-2201739
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==39]<-2201739
+
+#Caiçara Do Rio Do Vento  -  RN
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==148]<-2401909
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==151]<-2401909
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==154]<-2401909	
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==157]<-2401909	
+
+#Sao Tome - RN
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==150]<-2412906
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==153]<-2412906
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==156]<-2412906
+SW_powerPlants_long$municipality_code[SW_powerPlants_long$bndes_id==159]<-2412906
+
+
+#column renaming (PT to ENG)
+SW_powerPlants_long <- SW_powerPlants_long %>%
+  rename(
+    client = Cliente,
+    contract_date = 7,
+    funds_source  = 10,
+    dinancial_cost = 11,
+    interest = 12,
+    support_type = 15,
+    support_form = 16 ,
+    product = 17,
+    financial_instrument = 18,
+    innovation = 19,
+    operational_area = 20,
+    CNAE_sector = 21,
+    CNAE_subsector_grouped = 22,
+    CNAE_subsector_code = 23,
+    CNAE_subsector_name = 24,
+    BNDES_sector = 25,
+    BNDS_subsector = 26,
+    client_size = 27 ,
+    client_nature = 28,
+    CNPJ_accredited_financial_institution = 30,
+    guarantee_type = 31,
+    exceptionality_type = 32
+  )
+
+remove(new_row)
+
+#save the final, cleaned BNDES data
+saveRDS(SW_powerPlants_long, here("final","bndes_final.RDS"))
+```
+

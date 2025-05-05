@@ -1,0 +1,42 @@
+---
+title: "8- merge matching weights"
+output: html_document
+date: "2023-10-13"
+---
+
+```{r setup, include=FALSE}
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","here", "data.table","janitor","zoo","ggrepel","lubridate","MatchIt","table1","t1flex","t1kable","xtable","kableExtra", "geobr","cobalt", 
+                              "ggsn", "twang","RItools","stats","purrr","rlang","fixest","car","haven"))
+
+`%notin%` <- Negate(`%in%`)
+#setFixest_nthreads(nthreads = 4, save=TRUE)
+
+```
+
+import data
+```{r}
+solar_panel<-readRDS(here("final","solar_spillover_monthly_final_noweights.RDS"))%>%select(-c(4:11))
+wind_panel<-readRDS(here("final","wind_spillover_monthly_final_noweights.RDS"))%>%select(-c(4:11))
+solar_weights<-readRDS(here("final","solar_spillover_weights.RDS"))
+wind_weights<-readRDS(here("final","wind_spillover_weights.RDS"))
+
+solar_spill_annual<-readRDS(here("final", "solar_spillover_final_noweights.RDS"))%>%select(-c(3:10))
+wind_spill_annual<-readRDS(here("final", "wind_spillover_final_noweights.RDS"))%>%select(-c(3:10))
+
+```
+
+1. join weights
+```{r}
+solar_panel<- solar_panel %>%
+  left_join(solar_weights, by = "id_municipio")
+wind_panel<- wind_panel %>%
+  left_join(wind_weights, by = "id_municipio")
+
+saveRDS(solar_panel,here("final","solar1to1_final_monthly_spillover.RDS"))
+saveRDS(wind_panel,here("final","wind1to1_final_monthly_spillover.RDS"))
+
+```

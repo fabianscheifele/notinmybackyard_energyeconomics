@@ -1,0 +1,607 @@
+---
+title: "7 1-to-1 Matching"
+author: "Fabian Scheifele"
+date: "2023-07-31"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+0. load packages
+```{r setup, include=FALSE}
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","here", "data.table","janitor","zoo","ggrepel","lubridate","MatchIt","table1","t1flex","t1kable","xtable","kableExtra", "geobr","cobalt", 
+                              "ggsn", "twang","RItools","stats","purrr","rlang","openxlsx"))
+
+`%notin%` <- Negate(`%in%`)
+gc()
+```
+
+1. load data
+
+```{r cars}
+annual_panel<-readRDS(here("final","annual_panel_final_noweights.RDS"))
+
+mean(annual_panel$avg_wage_2020_BRL, na.rm=TRUE)
+
+eligible_controls<-annual_panel%>%filter(potential_control==1)%>%distinct(id_municipio)
+```
+
+2. Solar: restrict to sample eligible for matching
+```{r}
+#Exclude cases where other power plant installation is less than 2 years within wind operation start (potential employment spillover)
+# calculate minimum distance
+solar_treat <- annual_panel %>%
+  # Arrange by id_municipio and ano for correct computation of difference
+  arrange(id_municipio, ano) %>%
+  group_by(id_municipio) %>%
+  mutate(
+    # Create columns to record the years where conditions are met
+    year_solar = ifelse(new_mw_solar > 5, ano, NA),
+    year_other = ifelse(new_mw_other > 5, ano, NA),
+    year_wind = ifelse(new_mw_wind >5, ano, NA),
+    
+    # Carry forward the last observation for year columns until a new observation
+    year_solar = zoo::na.locf(year_solar, na.rm = FALSE),
+    year_other = zoo::na.locf(year_other, na.rm = FALSE),
+    year_wind = zoo::na.locf(year_wind, na.rm = FALSE)
+
+  ) %>%
+  # Compute the absolute difference between the year columns
+  mutate(dist_other = abs(year_solar - year_other),
+         dist_wind = abs (year_solar - year_wind),
+         min_dist_other = min(dist_other, na.rm = TRUE),
+         min_dist_wind = min(dist_wind, na.rm = TRUE))
+
+solar_treat4<-solar_treat%>%group_by(id_municipio)%>%
+  filter(any(new_mw_solar>5) & min_dist_other>=3 & min_dist_wind>=3)%>%distinct(id_municipio)
+
+#Exclude municipality 2209757 because of bad data quality (leaves 41 treatment municipalities in total)
+solar_treat_diff<-solar_treat4%>%distinct(id_municipio)%>%filter(id_municipio!=2209757)%>%
+  mutate(solar_treat_prematch=1)
+
+#add treatment and control municipality and adapt solar_treat=0 for potential controls (and NA for municipios that will not take part in matching)
+annual_panel<-annual_panel%>%
+  left_join(solar_treat_diff, by=c("id_municipio"))
+annual_panel$solar_treat_prematch[annual_panel$potential_control==1]<-0
+
+#filter out two very large municipalities for whom no good matches can be found
+annual_panel<-annual_panel%>%filter(id_municipio %notin% c(2303709,2918407))
+```
+
+Solar Sequenced 1-to-1 matching- Part 1
+```{r}
+#check in which years there is a first treatment
+solar_years<-annual_panel%>%ungroup()%>%filter(t_solar==0 & solar_treat_prematch==1)%>%distinct(ano)
+
+#1. DO MATCHING MANUALLY for first treatment to get first group exclude from data (matching without replacement!)
+#restrict to respective year
+matching1<-annual_panel%>%group_by(id_municipio)%>%
+  filter(any(solar_treat_prematch==0) | any(solar_treat_prematch==1 & year_first_treat_solar==2016))
+
+#prepare pretreatment data, create average of each variable of interest of four to two years prior to treatment start
+matching1 <- matching1 %>%
+  arrange(id_municipio, ano) %>%
+  group_by(id_municipio) %>%
+  mutate(avg_pop = map_dbl(row_number(), ~mean(populacao[ano >= ano[.x]-4 & ano <= ano[.x]-2], na.rm = TRUE))) %>%
+  mutate(avg_emp = map_dbl(row_number(), ~mean(total_jobs_3112[ano >= ano[.x]-4 & ano <= ano[.x]-2], na.rm = TRUE))) %>%
+  filter(ano==2016)%>%
+  distinct(id_municipio, ano, sigla_uf, avg_emp, irradiation_2017, solar_treat_prematch) %>%
+  ungroup
+
+#randomly order the data frame (because matching without replacement will take nearest neighbor)
+set.seed(1234)
+matching1 <- matching1 %>%
+  sample_n(nrow(matching1))
+
+#Set cutoffs for CEM matching
+empl_quantile_solar<- quantile(matching1$avg_emp, probs = c(0.33, 0.95))
+
+#First model only with irradiation and population should be enough due to logit result (ONLY LOOSING THREE TREATED with STATE and 0 with region!)
+cutpoints_solar <- list(irradiation_2017 = c(0,5400), avg_emp=empl_quantile_solar)
+
+matchresult_solar <- matchit(solar_treat_prematch ~ irradiation_2017+sigla_uf+avg_emp , data = matching1, 
+                     method = 'cem', estimand = 'ATE', k2k=TRUE,
+                     cutpoints=cutpoints_solar)
+matched_2016_solar<- match.data(matchresult_solar)%>%select(id_municipio, weights, subclass, solar_treat_prematch)%>%mutate(matched_year_solar=2016)%>%
+      rename(subclass_solar=subclass,
+            weights_solar=weights,
+             solar_treat_postmatch=solar_treat_prematch)
+
+summary(matchresult_solar)
+```
+
+Solar Sequenced 1-to-1 matching- Part 2
+```{r}
+#2. REPEAT FOR OTHER YEARS VIA FUNCTION
+#Define the matching function
+matching_function_solar<- function(year,match_df) {
+  
+  # Exclude already matched pairs
+  matching1 <- annual_panel %>%
+    group_by(id_municipio) %>%
+    filter(!id_municipio %in% match_df$id_municipio)
+  
+  # Filter the data to keep only non-treated or IDs first treated in the respective year
+  matching1 <- matching1 %>%
+    filter(any(solar_treat_prematch == 0) | any(solar_treat_prematch == 1 & year_first_treat_solar == year))
+  
+  # Prepare pretreatment data
+  matching1 <- matching1 %>%
+    arrange(id_municipio, ano) %>%
+    group_by(id_municipio) %>%
+    mutate(avg_pop = map_dbl(row_number(), ~mean(populacao[ano >= ano[.x]-4 & ano <= ano[.x]-2], na.rm = TRUE))) %>%
+    mutate(avg_emp = map_dbl(row_number(), ~mean(total_jobs_3112[ano >= ano[.x]-4 & ano <= ano[.x]-2], na.rm = TRUE))) %>%
+    filter(ano == year) %>%
+    distinct(id_municipio, ano, sigla_uf, avg_emp,irradiation_2017, solar_treat_prematch) %>%
+    ungroup()
+  
+  # Randomly order the data frame
+  set.seed(1234)
+  matching1 <- matching1 %>%
+    sample_n(nrow(matching1))
+  
+  # Set cutoffs for CEM matching
+  empl_quantile_solar<- quantile(matching1$avg_emp, probs = c(0.33, 0.95))
+  cutpoints_solar <- list(irradiation_2017 = c(0,5400),avg_emp=empl_quantile_solar)
+  
+  # Do matching
+  matchresult_solar <- matchit(solar_treat_prematch ~ irradiation_2017+sigla_uf+avg_emp , data = matching1, 
+                               method = 'cem', estimand = 'ATE', k2k=TRUE,
+                               cutpoints=cutpoints_solar)
+  df <- match.data(matchresult_solar) %>%select(id_municipio, weights, subclass, solar_treat_prematch)
+#  df$subclass<-as.integer(df$subclass)
+    df<-df%>%
+      mutate(matched_year_solar = year )%>%
+    rename(subclass_solar=subclass,
+           weights_solar=weights,
+           solar_treat_postmatch=solar_treat_prematch)
+}
+
+matched_2017_solar<-matching_function_solar(2017, matched_2016_solar)
+matched_201617_solar<-bind_rows(matched_2016_solar, matched_2017_solar)
+
+matched_2018_solar<-matching_function_solar(2018, matched_201617_solar)
+matched_201618_solar<-bind_rows(matched_201617_solar, matched_2018_solar)
+
+matched_2019_solar<-matching_function_solar(2019, matched_201618_solar)
+matched_201619_solar<-bind_rows(matched_201618_solar, matched_2019_solar)
+
+#no municipalities with first treatment in 2020 (only ones that have been treated for second time_solar)
+matched_2021_solar<-matching_function_solar(2021, matched_201619_solar)
+matched_201621_solar<-bind_rows(matched_201619_solar, matched_2021_solar)
+
+matched_2022_solar<-matching_function_solar(2022, matched_201621_solar)
+matched_201622_solar<-bind_rows(matched_201621_solar, matched_2022_solar)
+
+matched_201622_solar$subclass_solar <- as.factor(interaction(matched_201622_solar$subclass_solar, matched_201622_solar$matched_year_solar))
+matched_201622_solar$subclass_solar<-as.integer(matched_201622_solar$subclass_solar)
+
+saveRDS(matched_201622_solar, here("final","solar_weights_1_to_1.RDS"))
+
+rm(list=setdiff(ls(), c("annual_panel", "municipios_control","matched_201622_solar")))
+```
+
+
+wind: restrict to sample eligible for matching
+```{r}
+#Exclude cases where other power plant installation is less than 2 years within wind operation start (potential employment spillover)
+# calculate minimum distance
+wind_treat <- annual_panel %>%
+  # Arrange by id_municipio and ano for correct computation of difference
+  arrange(id_municipio, ano) %>%
+  group_by(id_municipio) %>%
+  mutate(
+    # Create columns to record the years where conditions are met
+    year_wind = ifelse(new_mw_wind > 5, ano, NA),
+    year_other = ifelse(new_mw_other > 5, ano, NA),
+    year_solar = ifelse(new_mw_solar >5, ano, NA),
+    
+    # Carry forward the last observation for year columns until a new observation
+    year_wind = zoo::na.locf(year_wind, na.rm = FALSE),
+    year_other = zoo::na.locf(year_other, na.rm = FALSE),
+    year_solar = zoo::na.locf(year_solar, na.rm = FALSE)
+
+  ) %>%
+  # Compute the absolute difference between the year columns
+  mutate(dist_other = abs(year_wind - year_other),
+         dist_solar = abs (year_wind - year_solar),
+         min_dist_other = min(dist_other, na.rm = TRUE),
+         min_dist_solar = min(dist_solar, na.rm = TRUE))
+
+#Excluding any municipalities with alternative power plant investment within 3 years of operation start reduces sample to 103 muns
+wind_treat4<-wind_treat%>%group_by(id_municipio)%>%filter(any(new_mw_wind>5),min_dist_other>=3 & min_dist_solar>=3)%>%distinct(id_municipio)%>%
+  mutate(wind_treat_prematch=1)
+
+
+#add treatment and control municipality and adapt wind_treat=0 for potential controls (and NA for municipios that will not take part in matching)
+annual_panel<-annual_panel%>%
+  left_join(wind_treat4, by=c("id_municipio"))
+
+annual_panel$wind_treat_prematch[annual_panel$potential_control==1]<-0
+
+nan<- annual_panel%>%filter(id_municipio==2210623)%>%select(ano,t_wind, employment_growth, total_jobs_3112) %>%
+  mutate(avg_emp_growth = map_dbl(row_number(), ~mean(employment_growth[ano >= ano[.x]-5 & ano <= ano[.x]-2], na.rm = TRUE)))
+
+```
+
+wind Sequenced 1-to-1 matching- Part 1
+```{r}
+#check in which years there is a first treatment
+wind_years<-annual_panel%>%ungroup()%>%filter(t_wind==0 & wind_treat_prematch==1)%>%distinct(ano)
+
+#1. DO MATCHING MANUALLY for first treatment to get first group exclude from data (matching without replacement!)
+#restrict to respective year
+matching1<-annual_panel%>%group_by(id_municipio)%>%
+  filter(any(wind_treat_prematch==0) | any(wind_treat_prematch==1 & year_first_treat_wind==2008))
+
+#prepare pretreatment data
+matching1 <- matching1 %>%
+  arrange(id_municipio, ano) %>%
+  group_by(id_municipio) %>%
+  mutate(avg_pop = map_dbl(row_number(), ~mean(populacao[ano >= ano[.x]-4 & ano <= ano[.x]-2], na.rm = TRUE))) %>%
+  mutate(avg_emp = map_dbl(row_number(), ~mean(total_jobs_3112[ano >= ano[.x]-4 & ano <= ano[.x]-2], na.rm = TRUE))) %>%
+  mutate(avg_emp_growth = map_dbl(row_number(), ~mean(employment_growth[ano >= ano[.x]-4 & ano <= ano[.x]-2], na.rm = TRUE))) %>%
+  filter(ano==2008)%>%
+  distinct(id_municipio, ano, sigla_uf, avg_pop, avg_wind_speed, wind_treat_prematch) %>%
+  ungroup
+
+#randomly order the data frame (because matching without replacement will take nearest neighbor)
+set.seed(1234)
+matching1 <- matching1 %>%
+  sample_n(nrow(matching1))
+
+#Set cutoffs for CEM matching
+pop_quantile_wind<-quantile(matching1$avg_pop, probs = c(0.25,0.66, 0.95))
+
+
+quartiles_windspeed <- quantile(annual_panel$avg_wind_speed[annual_panel$wind_treat_prematch==1], probs = c(0.1,0.5), na.rm = TRUE)
+
+#First model only with irradiation and population should be enough due to logit result (ONLY LOOSING THREE TREATED with STATE and 0 with region!)
+cutpoints_wind <- list(avg_pop = pop_quantile_wind, avg_wind_speed = quartiles_windspeed)
+
+matchresult_wind <- matchit(wind_treat_prematch ~ avg_pop + avg_wind_speed+sigla_uf , data = matching1, 
+                     method = 'cem', estimand = 'ATE', k2k=TRUE,
+                     cutpoints=cutpoints_wind)
+matched_wind_2008<- match.data(matchresult_wind)%>%select(id_municipio, weights, subclass, wind_treat_prematch)%>%mutate(matched_year_wind=2008)%>%
+      rename(subclass_wind=subclass,
+            weights_wind=weights, 
+            wind_treat_postmatch=wind_treat_prematch)
+```
+
+wind Sequenced 1-to-1 matching- Part 2
+```{r}
+#2. REPEAT FOR OTHER YEARS VIA FUNCTION (CHANGE: INSTEAD OF DROPPING MATCHED CONTROLS, CONTROLS CAN BE RE-USED)
+#Define the matching function
+matching_function_wind<- function(year,match_df) {
+  
+  # Exclude already matched treated units (CONTROLS can be reused)
+  matching1 <- annual_panel %>%
+    group_by(id_municipio) %>%
+    filter(!id_municipio %in% match_df$id_municipio[match_df$wind_treat_postmatch==1])
+  
+  # Filter the data to keep only non-treated or IDs first treated in the respective year
+  matching1 <- matching1 %>%
+    filter(any(wind_treat_prematch == 0) | any(wind_treat_prematch == 1 & year_first_treat_wind == year))
+  
+  # Prepare pretreatment data
+  matching1 <- matching1 %>%
+    arrange(id_municipio, ano) %>%
+    group_by(id_municipio) %>%
+    mutate(avg_pop = map_dbl(row_number(), ~mean(populacao[ano >= ano[.x]-5 & ano <= ano[.x]-2], na.rm = TRUE))) %>%
+    mutate(avg_emp = map_dbl(row_number(), ~mean(total_jobs_3112[ano >= ano[.x]-5 & ano <= ano[.x]-2], na.rm = TRUE))) %>%
+      mutate(avg_emp_growth = map_dbl(row_number(), ~mean(employment_growth[ano >= ano[.x]-5 & ano <= ano[.x]-2], na.rm = TRUE))) %>%
+    filter(ano == year) %>%
+    distinct(id_municipio, ano, sigla_uf, avg_pop, avg_wind_speed, wind_treat_prematch) %>%
+    ungroup()
+  
+  # Randomly order the data frame
+  set.seed(1234)
+  matching1 <- matching1 %>%
+    sample_n(nrow(matching1))
+  
+  # Set cutoffs for CEM matching (see Footnote 3 for reasoning for taking population rather than labor stock for wind)
+  avg_pop <- quantile(matching1$avg_pop, probs = c(0.25,0.66, 0.95))
+
+
+quartiles_windspeed <- quantile(matching1$avg_wind_speed[matching1$wind_treat_prematch==1], probs = c(0.1,0.5))
+  cutpoints_wind <- list(avg_pop = avg_pop, avg_wind_speed = quartiles_windspeed)
+  
+  # Do matching
+  matchresult_wind <- matchit(wind_treat_prematch ~ avg_pop + avg_wind_speed+sigla_uf , data = matching1, 
+                               method = 'cem', estimand = 'ATE', k2k=TRUE,
+                               cutpoints=cutpoints_wind)
+  df <- match.data(matchresult_wind) %>%select(id_municipio, weights, subclass, wind_treat_prematch)
+    df<-df%>%
+      mutate(matched_year_wind = year )%>%
+    rename(subclass_wind=subclass,
+           weights_wind=weights,
+           wind_treat_postmatch=wind_treat_prematch)
+}
+
+matched_wind_2009<-matching_function_wind(2009, matched_wind_2008)
+matched_wind_200809<-bind_rows(matched_wind_2008,matched_wind_2009)
+
+matched_wind_2010<-matching_function_wind(2010, matched_wind_200809)
+matched_wind_200810<-bind_rows(matched_wind_200809, matched_wind_2010)
+
+matched_wind_2011<-matching_function_wind(2011, matched_wind_200810)
+matched_wind_200811<-bind_rows(matched_wind_200810, matched_wind_2011)
+
+matched_wind_2012<-matching_function_wind(2012, matched_wind_200811)
+matched_wind_200812<-bind_rows(matched_wind_200811, matched_wind_2012)
+
+matched_wind_2013<-matching_function_wind(2013, matched_wind_200812)
+matched_wind_200813<-bind_rows(matched_wind_200812, matched_wind_2013)
+
+matched_wind_2014<-matching_function_wind(2014, matched_wind_200813)
+matched_wind_200814<-bind_rows(matched_wind_200813, matched_wind_2014)
+
+matched_wind_2015<-matching_function_wind(2015, matched_wind_200814)
+matched_wind_200815<-bind_rows(matched_wind_200814, matched_wind_2015)
+
+matched_wind_2016<-matching_function_wind(2016, matched_wind_200815)
+matched_wind_200816<-bind_rows(matched_wind_200815, matched_wind_2016)
+
+matched_wind_2017<-matching_function_wind(2017, matched_wind_200816)
+matched_wind_200817<-bind_rows(matched_wind_200816, matched_wind_2017)
+
+matched_wind_2018<-matching_function_wind(2018, matched_wind_200817)
+matched_wind_200818<-bind_rows(matched_wind_200817, matched_wind_2018)
+
+#no municipalities with first treatment in 2019 (only conseceutively treated)
+matched_wind_2020<-matching_function_wind(2020, matched_wind_200818)
+matched_wind_200820<-bind_rows(matched_wind_200818, matched_wind_2020)
+       
+matched_wind_2021<-matching_function_wind(2021, matched_wind_200820)
+matched_wind_200821<-bind_rows(matched_wind_200820, matched_wind_2021)                              
+  
+matched_wind_2022<-matching_function_wind(2022, matched_wind_200821)
+matched_wind_200822<-bind_rows(matched_wind_200821, matched_wind_2022) 
+
+#80 matches out of 103 eligible
+wind_matched<-unique(matched_wind_200822$id_municipio[matched_wind_200822$wind_treat_postmatch==1])
+
+#Create unique factor variable for each matching pair
+matched_wind_200822$subclass_wind <- as.factor(interaction(matched_wind_200822$subclass_wind, matched_wind_200822$matched_year_wind))
+matched_wind_200822$subclass_wind<-as.integer(matched_wind_200822$subclass_wind)
+
+
+saveRDS(matched_wind_200822, here("final","wind_weights_1_to_1.RDS"))
+
+
+rm(list=setdiff(ls(), c("matched_wind_200822","matched_201622_solar","annual_panel")))
+```
+
+
+
+Solar: Assessing Balance
+```{r}
+options(scipen=999)
+annual_panel<-readRDS(here("final","annual_panel_final_noweights.RDS"))
+matched_201622_solar<-readRDS(here("final","solar_weights_1_to_1.RDS"))
+
+annual_panel<-annual_panel%>%
+  left_join(matched_201622_solar, by=c("id_municipio"))
+annual_panel<-annual_panel%>%
+  mutate(total_solar_jobs=solar_component_jobs_3112_total+solar_om_jobs_3112_total+solar_installation_jobs_3112_total)%>%
+  mutate(total_wind_jobs=wind_component_jobs_3112_total+wind_om_jobs_3112_total+wind_installation_jobs_3112_total)
+
+#PART 1 CREATE BALANCE TABLE FOR UNADJUSTED SAMPLE (PRE-MATCHING)
+#Original treatment assignment was >5MW 
+annual_panel<-annual_panel%>%mutate(solar_treat_prematch=if_else(any(new_mw_solar>5),1,0),
+                                    wind_treat_prematch=if_else(any(new_mw_wind>5),1,0))
+
+
+vars<-c("populacao", "total_jobs_3112", "primary_edu_3112", "secondary_edu_3112","tertiary_edu_3112", "avg_wage_2020_BRL", "total_establishment", "total_solar_jobs", "spending_pc", "total_receipt_pc", "munic_index_general", "spending_energy", "spending_environ", "spending_infra", "pib_clean_constant2020_BRL", "gdp_pc", "employment_growth", "private_est_total", "irradiation_2017")
+summary(annual_panel$solar_treat_prematch)
+
+treat<-annual_panel%>%distinct(solar_treat_prematch, id_municipio)
+unmatched_solar<-annual_panel%>%filter(ano %in% c(2012:2015))%>%
+  group_by(solar_treat_prematch, id_municipio)%>%
+  summarise(across(all_of(vars), ~mean(.x, na.rm = TRUE)))
+
+no_obs_solar <- c(5513,47)
+#Create Balance table
+solar_balance_pre<-bal.tab(unmatched_solar%>%select(-id_municipio,-solar_treat_prematch), treat = unmatched_solar$solar_treat_prematch,
+        binary = "std", continuous = "std", disp= "means", stats="mean.diffs")
+solar_balance_pre_df<-as.data.frame(solar_balance_pre$Balance)
+solar_balance_pre_df<-rownames_to_column(solar_balance_pre_df, "Variable")
+solar_balance_pre_df<-solar_balance_pre_df%>%filter(Variable != "solar_treat_prematch")%>%select(1,3:5)%>%
+  rename(`Mean C (Unmatched)`=2,
+         `Mean T (Unmatched)`=3,
+         `Std. Diff. (Unm.)`=4)
+
+nobs_solar<-as.data.frame(solar_balance_pre$Observations)
+nobs_solar<-rownames_to_column(nobs_solar, "Variable")
+nobs_solar <- nobs_solar %>%
+  rename_at(vars(2:3), ~c("Mean C (Unmatched)", "Mean T (Unmatched)"))
+library(stringr)
+solar_balance_pre_df<-bind_rows(solar_balance_pre_df,nobs_solar)%>%
+  filter(!str_detect(Variable, "<NA>$"))
+
+#Create the placebo timing for the matched pairs
+# Split the data frame into treated and untreated
+treated_df <- annual_panel %>%
+  filter(solar_treat_postmatch == 1)
+
+untreated_df <- annual_panel %>%
+  filter(solar_treat_postmatch == 0)
+
+# Join the dataframes and copy the t_solar values
+new_df <- untreated_df %>%
+  left_join(treated_df[, c("subclass_solar", "ano", "t_solar")], 
+            by = c("subclass_solar", "ano")) %>%
+  mutate(t_solar = ifelse(is.na(t_solar.x), t_solar.y, t_solar.x)) %>%
+  select(-t_solar.x, -t_solar.y)
+
+# Append the untreated rows with updated t_solar and treated rows
+annual_panel_updated <- rbind(new_df, treated_df)
+
+balance_data<-annual_panel_updated%>%
+  filter(t_solar %in% c(-4,-3,-2))%>%
+  mutate(total_solar_jobs=solar_component_jobs_3112_total+solar_om_jobs_3112_total+solar_installation_jobs_3112_total)%>%
+  select(municipality_name, sigla_uf,subclass_solar, populacao, total_jobs_3112, primary_edu_3112, secondary_edu_3112,tertiary_edu_3112, avg_wage_2020_BRL, total_establishment, total_solar_jobs, spending_pc, total_receipt_pc, munic_index_general, spending_energy, spending_environ, spending_infra, solar_treat_postmatch, weights_solar, pib_clean_constant2020_BRL, gdp_pc, employment_growth, private_est_total, irradiation_2017)%>%ungroup
+
+solar_treated<-length(unique(balance_data$id_municipio[balance_data$solar_treat_postmatch==1]))
+solar_control<-length(unique(balance_data$id_municipio[balance_data$solar_treat_postmatch==0]))
+nobs_solar_post <- data.frame(Variable="All", "Mean T" = solar_treated, "Mean C" = solar_control)%>%
+  rename(`Mean T (Matched)`=2,
+         `Mean C (Matched)`=3)
+                              
+#Matching Command Solar
+solar1to1bal_post<-bal.tab(balance_data%>%select(-solar_treat_postmatch, -weights_solar,-id_municipio,-sigla_uf,-municipality_name,-subclass_solar), treat = balance_data$solar_treat_postmatch, weights = balance_data$weights_solar,
+        binary = "std", continuous = "std", disp= "means", stats="mean.diffs") 
+
+solar_baltab2_df_post<-as.data.frame(solar1to1bal_post$Balance)
+solar_baltab2_df_post<-rownames_to_column(solar_baltab2_df_post, "Variable")
+solar_baltab2_df_post<-solar_baltab2_df_post%>%select(1,6:8)%>%
+  rename(`Mean C (Matched)`=2,
+         `Mean T (Matched)`=3,
+         `Std. Diff.(Matched)`=4)
+
+library(stringr)
+solar_baltab2_df_post<-bind_rows(solar_baltab2_df_post,nobs_solar_post)%>%
+  filter(!str_detect(Variable, "<NA>$"))
+
+#Merge together pre and post-matching data and transform to latex
+final_solar<-left_join(solar_balance_pre_df,solar_baltab2_df_post,by=c("Variable"))
+vars_nice<- c("Population", "No. of workers", "No. of workers with primary education", "No. of workers with secondary education",
+              "No. of workers with tertiary education", "Wage in 2020 BRL", "No. of firms", "No. of workers in solar-related sector",
+              "Municipal spending p.c.", "Municipal receipts p.c.", "Municipal development index", "Municipal spending on energy",
+              "Municipal spending on environment", "Municipal spending on other infrastructure", "GDP (2020 BRL)", "GDP p.c. (2020 BRL)", "Growth in no. of workers (%)", "No. of private-sector firms", "Irradition", "N")
+final_solar$Variable<-vars_nice
+
+#include commas for each 3 digits
+columns_to_format <- 2:7  # You can change this to 2:7 to include all relevant columns
+final_solar[, columns_to_format] <- sapply(final_solar[, columns_to_format], function(x) {
+  format(round(x,2), big.mark = ",", decimal.mark = ".")
+})
+solar_baltab2_df_tex<-xtable(final_solar, type="latex", digits = 2)
+
+
+print(solar_baltab2_df_tex, include.rownames = FALSE,  file=here("output","matching-1to1","solar_baltab_postonly_final.tex"))
+write.xlsx(solar_baltab2_df_tex, file = here("output","matching-1to1","solar_baltab_postonly_final.xlsx"), tableStyle = "TableStyleMedium9", row.names = TRUE)
+
+
+bal.plot(balance_data, "populacao",treat=balance_data$solar_treat_postmatch, which = "adjusted") + theme( plot.background = element_rect(fill = "white"))+ ggtitle("Avg.population (t-4 to t-2)")
+
+bal.plot(balance_data, "total_jobs_3112",treat=balance_data$solar_treat_postmatch, which = "adjusted") + theme( plot.background = element_rect(fill = "white"))+ ggtitle("Avg. No of Jobs (t-4 to t-2)")
+
+bal.plot(balance_data, "gdp_pc",treat=balance_data$solar_treat_postmatch, which = "adjusted") + theme( plot.background = element_rect(fill = "white"))+ ggtitle("Avg. GDP p.c. (t-4 to t-2)")
+
+bal.plot(balance_data, "irradiation_2017",treat=balance_data$solar_treat_postmatch, which = "adjusted") + theme( plot.background = element_rect(fill = "white"))+ ggtitle("Avg. Irradiation (t-4 to t-2)")
+```
+Assessing balance wind
+```{r}
+matched_wind_200822<-readRDS(here("final","wind_weights_1_to_1.RDS"))
+
+annual_panel<-annual_panel%>%
+  left_join(matched_wind_200822, by=c("id_municipio"))
+
+#PART 1 CREATE BALANCE TABLE FOR UNADJUSTED SAMPLE (PRE-MATCHING)
+#Original treatment assignment was >5MW 
+
+wind_vars<-c("populacao", "total_jobs_3112", "primary_edu_3112", "secondary_edu_3112","tertiary_edu_3112", "avg_wage_2020_BRL", "total_establishment", "total_wind_jobs", "spending_pc", "total_receipt_pc", "munic_index_general", "spending_energy", "spending_environ", "spending_infra", "pib_clean_constant2020_BRL", "gdp_pc", "employment_growth", "private_est_total", "avg_wind_speed")
+summary(annual_panel$wind_treat_prematch)
+
+unmatched_wind<-annual_panel%>%
+  group_by(wind_treat_prematch, id_municipio)%>%
+  summarise(across(all_of(wind_vars), ~mean(.x, na.rm = TRUE)))
+
+eligible_wind<-annual_panel%>%
+  group_by(potential_control, id_municipio)%>%
+  summarise(across(all_of(wind_vars), ~mean(.x, na.rm = TRUE)))
+
+#Create Balance table
+wind_balance_pre<-bal.tab(unmatched_wind%>%select(-id_municipio,-wind_treat_prematch), treat = unmatched_wind$wind_treat_prematch,
+        binary = "std", continuous = "std", disp= "means", stats="mean.diffs")
+wind_balance_pre_df<-as.data.frame(wind_balance_pre$Balance)
+wind_balance_pre_df<-rownames_to_column(wind_balance_pre_df, "Variable")
+wind_balance_pre_df<-wind_balance_pre_df%>%filter(Variable != "wind_treat_prematch")%>%select(1,3:5)%>%
+  rename(`Mean C (Unm.)`=2,
+         `Mean T (Unm.)`=3,
+         `Std. Diff. (Unm.)`=4)
+
+nobs_wind<-as.data.frame(wind_balance_pre$Observations)
+nobs_wind<-rownames_to_column(nobs_wind, "Variable")
+nobs_wind <- nobs_wind %>%
+  rename_at(vars(2:3), ~c("Mean C (Unm.)", "Mean T (Unm.)"))
+library(stringr)
+wind_balance_pre_df<-bind_rows(wind_balance_pre_df,nobs_wind)%>%
+  filter(!str_detect(Variable, "<NA>$"))
+
+#Create the placebo timing for the matched pairs
+# Split the data frame into treated and untreated
+treated_df <- annual_panel %>%
+  filter(wind_treat_postmatch == 1)
+
+untreated_df <- annual_panel %>%
+  filter(wind_treat_postmatch == 0)
+
+# Join the dataframes and copy the t_wind values
+new_df <- untreated_df %>%
+  left_join(treated_df[, c("subclass_wind", "ano", "t_wind")], 
+            by = c("subclass_wind", "ano")) %>%
+  mutate(t_wind = ifelse(is.na(t_wind.x), t_wind.y, t_wind.x)) %>%
+  select(-t_wind.x, -t_wind.y)
+
+# Append the untreated rows with updated t_wind and treated rows
+annual_panel_updated <- rbind(new_df, treated_df)
+
+balance_data<-annual_panel_updated%>%
+  filter(t_wind %in% c(-4,-3,-2))%>%
+  mutate(total_wind_jobs=wind_component_jobs_3112_total+wind_om_jobs_3112_total+wind_installation_jobs_3112_total)%>%
+  select(municipality_name, sigla_uf,subclass_wind, populacao, total_jobs_3112, primary_edu_3112, secondary_edu_3112,tertiary_edu_3112, avg_wage_2020_BRL, total_establishment, total_wind_jobs, spending_pc, total_receipt_pc, munic_index_general, spending_energy, spending_environ, spending_infra, wind_treat_postmatch, weights_wind, pib_clean_constant2020_BRL, gdp_pc, employment_growth, private_est_total, avg_wind_speed)%>%ungroup
+
+wind_treated<-length(unique(balance_data$id_municipio[balance_data$wind_treat_postmatch==1]))
+wind_control<-length(unique(balance_data$id_municipio[balance_data$wind_treat_postmatch==0]))
+nobs_wind_post <- data.frame(Variable="All", "Control Mean" = wind_control, "Treatment Mean" = wind_treated)%>%
+  rename(`Mean C (Matched)`=2,
+         `Mean T (Matched)`=3)
+                              
+#Matching Command wind
+wind1to1bal_post<-bal.tab(balance_data%>%select(-wind_treat_postmatch, -weights_wind,-id_municipio,-sigla_uf,-municipality_name,-subclass_wind), treat = balance_data$wind_treat_postmatch, weights = balance_data$weights_wind,
+        binary = "std", continuous = "std", disp= "means", stats="mean.diffs") 
+
+wind_baltab2_df_post<-as.data.frame(wind1to1bal_post$Balance)
+wind_baltab2_df_post<-rownames_to_column(wind_baltab2_df_post, "Variable")
+wind_baltab2_df_post<-wind_baltab2_df_post%>%select(1,6:8)%>%
+  rename(`Mean C (Matched)`=2,
+         `Mean T (Matched)`=3,
+         `Std. Diff. (Matched)`=4)
+
+library(stringr)
+wind_baltab2_df_post<-bind_rows(wind_baltab2_df_post,nobs_wind_post)%>%
+  filter(!str_detect(Variable, "<NA>$"))
+
+#Merge together pre and post-matching data and transform to latex
+final_wind<-left_join(wind_balance_pre_df,wind_baltab2_df_post,by=c("Variable"))
+vars_nice<- c("Population", "No. of workers", "No. of workers with primary education", "No. of workers with secondary education",
+              "No. of workers with tertiary education", "Wage in 2020 BRL", "No. of firms", "No. of workers in wind-related sector",
+              "Municipal spending p.c.", "Municipal receipts p.c.", "Municipal development index", "Municipal spending on energy",
+              "Municipal spending on environment", "Municipal spending on other infrastructure", "GDP (2020 BRL)", "GDP p.c. (2020 BRL)", "Growth in no. of workers (%)", "No. of private-sector firms", "Wind Speed", "N")
+final_wind$Variable<-vars_nice
+#transform decimals and thosands
+columns_to_format <- 2:7  # You can change this to 2:7 to include all relevant columns
+final_wind[, columns_to_format] <- sapply(final_wind[, columns_to_format], function(x) {
+  format(round(x,2), big.mark = ",", decimal.mark = ".")
+})
+
+wind_baltab2_df_tex<-xtable(final_wind,type="latex", digits = 2)
+print(wind_baltab2_df_tex, include.rownames = FALSE,file=here("output","matching-1to1","wind_baltab_postonly_final.tex"))
+write.xlsx(wind_baltab2_df_tex, file = here("output","matching-1to1","wind_baltab_postonly_final.xlsx"), tableStyle = "TableStyleMedium9", rowNames = TRUE)
+
+bal.plot(balance_data, "populacao",treat=balance_data$wind_treat_postmatch, which = "adjusted") + theme( plot.background = element_rect(fill = "white"))+ ggtitle("Avg.population (t-4 to t-2)")
+
+bal.plot(balance_data, "total_jobs_3112",treat=balance_data$wind_treat_postmatch, which = "adjusted") + theme( plot.background = element_rect(fill = "white"))+ ggtitle("Avg. No of Jobs (t-4 to t-2)")
+
+bal.plot(balance_data, "gdp_pc",treat=balance_data$wind_treat_postmatch, which = "adjusted") + theme( plot.background = element_rect(fill = "white"))+ ggtitle("Avg. GDP p.c. (t-4 to t-2)")
+
+bal.plot(balance_data, "avg_wind_speed",treat=balance_data$wind_treat_postmatch, which = "adjusted") + theme( plot.background = element_rect(fill = "white"))+ ggtitle("Avg. wind speed (t-4 to t-2)")
+
+bal.plot(balance_data, "employment_growth",treat=balance_data$wind_treat_postmatch, which = "adjusted") + theme( plot.background = element_rect(fill = "white"))+ ggtitle("Avg. employment growth (t-4 to t-2)")
+
+```

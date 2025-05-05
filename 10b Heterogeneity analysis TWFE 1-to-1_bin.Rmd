@@ -1,0 +1,768 @@
+---
+title: "10c Heterogeneity analysis TWFE 1-to-1"
+output: html_document
+date: "2023-10-08"
+editor_options: 
+  chunk_output_type: console
+---
+
+Packages and functions
+```{r }
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","here","bacondecomp", "fixest", "plm","geobr","sf","ggdist","ggspatial", "ggsn","scales"))
+
+coefplots<-function(formula, df, title, vars, pre,post,seq,seq_graph,subfolder,filename){
+  fe<-feols(formula, df, cluster = "id_municipio")
+  coef<-coef(fe)[grepl(paste0("^(", paste(vars, collapse = "|"), ")"), names(coef(fe)))]
+  se <- se(fe)[grepl(paste0("^(", paste(vars, collapse = "|"), ")"), names(coef(fe)))]
+  data<-data.frame(coef,se)%>%mutate(x.axis=seq(pre,post,seq))
+  plot <-ggplot(data, aes(x = x.axis, y = coef)) +
+  geom_ribbon(aes(ymin = coef - 1.96 * se, ymax = coef + 1.96 * se), fill = "gray70") +
+   geom_line() +ggtitle(title)+
+  labs(x="", y="")+theme_bw()+ theme(text = element_text(size = 7))+scale_x_continuous(breaks=seq(pre,post,seq_graph))+geom_vline(xintercept = 0, linetype="dashed")+geom_hline(yintercept = 0, linetype="dashed")
+  ggsave(plot, filename=(here("output", "regressions","TWFE 1-to-1 binning", subfolder,filename )), width = 2000, height=1000, units="px")
+print(plot)
+  }
+
+#Functions for splitting sample and plotting two coeffcients lines in same plot
+extract_coeffs2<-function(formula, df1, df2,start, end, df1_group,df2_group, subfolder, filename,name_title){
+fe1<-feols(formula, df1, cluster = "id_municipio")
+  df1<- as.data.frame(fe1$coeftable)
+current_rows1 <- nrow(df1)
+additional_rows1 <- 62 - current_rows1
+additional_data1 <- data.frame(matrix(NA, ncol = ncol(df1), nrow = additional_rows1))
+colnames(additional_data1)<-colnames(df1)
+df1 <- bind_rows(df1, additional_data1)%>%
+  mutate(date = c(-37,seq(-35,25,1)))%>%
+  mutate(conf.low=Estimate-1.96*`Std. Error`,
+         conf.high=Estimate+1.96*`Std. Error`)
+  df1$date<-as.numeric(df1$date)
+  df1<-df1%>%mutate(fill_group=df1_group)%>%select(date, Estimate, conf.low,conf.high, fill_group)
+  add_row1 <- data.frame(Estimate = 0, date = -36,conf.low=0,conf.high=0,fill_group=df1_group)
+  df1 <- bind_rows(df1, add_row1)
+  
+fe2<-feols(formula, df2, cluster = "id_municipio")
+df2<- as.data.frame(fe2$coeftable)
+current_rows2 <- nrow(df2)
+additional_rows2 <- 62 - current_rows2
+additional_data2 <- data.frame(matrix(NA, ncol = ncol(df2), nrow = additional_rows2))
+colnames(additional_data2)<-colnames(df2)
+
+df2 <- bind_rows(df2, additional_data2)%>%
+  mutate(date = c(-37,seq(-35,25,1)))%>%
+  mutate(conf.low=Estimate-1.96*`Std. Error`,
+         conf.high=Estimate+1.96*`Std. Error`)
+  df2$date<-as.numeric(df2$date)
+  df2<-df2%>%mutate(fill_group=df2_group)%>%select(date, Estimate, conf.low,conf.high, fill_group)
+  add_row2 <- data.frame(Estimate = 0, date = -36,conf.low=0,conf.high=0,fill_group=df2_group)
+  df2 <- bind_rows(df2, add_row2)
+  
+    df_final<-bind_rows(df1,df2)
+    df_final <- df_final %>% 
+      mutate(fill_group = factor(fill_group, levels = c(df1_group, df2_group)))
+    
+    plot <- ggplot(df_final %>% filter(date >= start, date <= end), aes(x = date, y = Estimate, fill = fill_group)) +
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.3) +
+    geom_line(aes(color=fill_group), show.legend = FALSE) +ggtitle("") +
+    
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+    labs(title = name_title,
+         fill = NULL,
+         x="Months before/after commissioning",
+         y="") +  
+    theme_bw()+ theme(text = element_text(size = 7)) +
+    scale_fill_manual(values = alpha(c("blue", "gray50"), 0.6), labels = c(df1_group, df2_group)) +
+    scale_color_manual(values = alpha(c("blue", "gray50"), 0.6)) +
+    scale_x_continuous(expand = c(0.01, 0.01),
+    breaks = c(-37, seq(-32, 20, by = 4), 25),  
+    labels = c("-37+", seq(-32, 20, by = 4), "25+"))+theme(legend.position = "bottom")
+ggsave(plot, filename=(here("output", "regressions","TWFE 1-to-1 binning", subfolder,filename )), width = 2000, height=1000, units="px")
+print(plot)
+}
+
+extract_coeffs_annual<-function(formula, df1, df2,start, end, df1_group,df2_group, subfolder, filename,name_title){
+fe1<-feols(formula, df1, cluster = "id_municipio")
+  df1<- as.data.frame(fe1$coeftable)
+df1 <- df1%>%
+  mutate(date = c(seq(start,-4,1),seq(-2,end,1)))%>%
+  mutate(conf.low=Estimate-1.96*`Std. Error`,
+         conf.low=Estimate-1.96*`Std. Error`,
+         conf.high=Estimate+1.96*`Std. Error`)
+  df1$date<-as.numeric(df1$date)
+  df1<-df1%>%mutate(fill_group=df1_group)%>%select(date, Estimate, conf.low,conf.high, fill_group)
+  add_row1 <- data.frame(Estimate = 0, date = -3,conf.low=0,conf.high=0,fill_group=df1_group)
+  df1 <- bind_rows(df1, add_row1)
+  
+fe2<-feols(formula, df2, cluster = "id_municipio")
+df2<- as.data.frame(fe2$coeftable)
+
+df2 <- df2%>%
+  mutate(date = c(seq(start,-4,1),seq(-2,end,1)))%>%
+  mutate(conf.low=Estimate-1.96*`Std. Error`,
+         conf.low=Estimate-1.96*`Std. Error`,
+         conf.high=Estimate+1.96*`Std. Error`)
+  df2$date<-as.numeric(df2$date)
+  df2<-df2%>%mutate(fill_group=df2_group)%>%select(date, Estimate, conf.low,conf.high, fill_group)
+  add_row2 <- data.frame(Estimate = 0, date = -3,conf.low=0,conf.high=0,fill_group=df2_group)
+  df2 <- bind_rows(df2, add_row2)
+  
+    df_final<-bind_rows(df1,df2)
+    df_final <- df_final %>% 
+      mutate(fill_group = factor(fill_group, levels = c(df1_group, df2_group)))
+    
+    plot <- ggplot(df_final %>% filter(date >= start, date <= end), aes(x = date, y = Estimate, fill = fill_group)) +
+    geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.3) +
+    geom_line(aes(color=fill_group), show.legend = FALSE) +ggtitle("") +
+    
+   geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+    labs(title = name_title,
+         fill = NULL,
+         x="Years before/after commissioning",
+         y="") +  
+    theme_bw()+ theme(text = element_text(size = 7)) +
+    scale_fill_manual(values = alpha(c("blue", "gray50"), 0.6), labels = c(df1_group, df2_group)) +
+    scale_color_manual(values = alpha(c("blue", "gray50"), 0.6)) +
+    scale_x_continuous(breaks=seq(start,end,1), labels = c(paste0(start,"+"),seq(start+1,end-1,1),paste0(end,"+")))+
+    scale_y_continuous(labels = scales::comma)+
+    theme(legend.position = "bottom")+
+            scale_y_continuous(labels = comma)
+ggsave(plot, filename=(here("output", "regressions","TWFE 1-to-1 binning", subfolder,filename )), width = 2000, height=1000, units="px")
+print(plot)
+}
+```
+
+load data
+```{r pressure, echo=FALSE}
+wind_matched_final_monthly<-readRDS(here("final","wind1to1_final_monthly.RDS"))
+solar_matched_final_monthly<-readRDS(here("final","solar1to1_final_monthly.RDS"))
+wind_matched_final_annual<-readRDS(here("final","wind1to1_final_annual.RDS"))
+solar_matched_final_annual<-readRDS(here("final","solar1to1_final_annual.RDS"))
+monthly_panel<-readRDS(here("final","monthly_final_noweights.RDS"))%>%
+  mutate(wind_jobs_endmonth=wind_inst_endmonth+wind_comp_endmonth+wind_om_endmonth)%>%
+  mutate(solar_jobs_endmonth=solar_inst_endmonth+solar_comp_endmonth+solar_om_endmonth)
+
+solar_matched_final_monthly$solar_othersolar_within50k
+#dummy if any installation happened within 50k within 24 month of treatment
+solar_matched_final_monthly<-solar_matched_final_monthly%>%arrange(id_municipio, ano, month)%>%
+  group_by(id_municipio)%>%
+  mutate(solar_spill=if_else(any(solar_othersolar_within50k>5 & t_solar>=-12 & t_solar<=24),1,0))%>%
+  mutate(other_spill=if_else(any(solar_otherpower_within50k>5 & t_solar>=-12 & t_solar<=24),1,0))%>%
+  mutate(solar_jobs_endmonth=solar_inst_endmonth+solar_comp_endmonth+solar_om_endmonth)
+
+wind_matched_final_monthly<-wind_matched_final_monthly%>%arrange(id_municipio, ano, month)%>%
+  group_by(id_municipio)%>%
+  mutate(wind_spill=if_else(any(wind_otherwind_within50k>5 & t_wind>=-12 & t_wind<=24),1,0))%>%
+  mutate(other_spill=if_else(any(wind_otherpower_within50k>5 & t_wind>=-12 & t_wind<=24),1,0))%>%
+  mutate(wind_jobs_endmonth=wind_inst_endmonth+wind_comp_endmonth+wind_om_endmonth)
+```
+
+Where are treated and non-treated units?
+```{r}
+wind_cities<- wind_matched_final_monthly%>%distinct(wind_treat_postmatch, lon, lat)%>%rename(treated=wind_treat_postmatch)%>%mutate(type=if_else(treated==1, "Wind treated", "Wind control"))
+solar_cities<- solar_matched_final_monthly%>%distinct(solar_treat_postmatch, lon, lat)%>%rename(treated=solar_treat_postmatch)%>%mutate(type=if_else(treated==1, "Solar treated", "Solar control"))
+cities<-bind_rows(wind_cities,solar_cities)
+
+
+wind_matched_final_annual %>%
+  distinct(id_municipio, year_first_treat_wind) %>%
+  filter(!is.na(year_first_treat_wind))%>%
+  group_by(year_first_treat_wind) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = as.factor(year_first_treat_wind), y = count)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Year", y = "Frequency") +
+  ggtitle("Frequency of Treatments by Year")
+
+
+#ST to SF
+cities_sf <- sf::st_as_sf(cities, 
+                       coords = c("lon", "lat"),
+                       crs = 4269) 
+
+
+states <- geobr::read_state(
+  year=2020, 
+  showProgress = FALSE
+  )
+# Remove plot axis
+no_axis <- theme(axis.title=element_blank(),
+                 axis.text=element_blank(),
+                 axis.ticks=element_blank())
+
+# Plot all Brazilian states
+
+map<-ggplot() +
+  geom_sf(data = states, fill = "white", color = "black", size = 0.15) +
+  geom_sf(data = cities_sf,
+          aes(geometry = geometry, color = factor(type)),
+          size = 1) +
+  scale_color_manual(values = c("Wind control" = "grey50", "Wind treated" = "green", "Solar control"="blue", "Solar treated"= "orange")) +
+  theme_minimal() +
+  labs(title = "Matched municipalities",
+       color = "", x="",y="") +
+  theme(legend.position = "bottom", panel.background = element_rect(fill = "white"),
+        plot.background = element_rect(fill = "white"))+no_axis
+
+ggsave(plot=map,file=here("output","regressions","TWFE 1-to-1 binning","final figures", "main","map.png"), width = 2000, height=2000, units="px")
+
+```
+
+
+Spillovers (plants that have other plants in their vicinity)
+```{r}
+solar_total_form<- xpd(total_endmonth ~ d_solar_pre37_bin + d_solar_pre.[35:1]  + new_mw_solar+ d_solar_post.[1:24] + d_solar_post25_bin |id_municipio + month^ano)
+solar_om_form<- xpd(solar_om_endmonth ~ d_solar_pre37_bin + d_solar_pre.[35:1]  + new_mw_solar+ d_solar_post.[1:24] + d_solar_post25_bin |id_municipio + month^ano)
+solar_inst_form<- xpd(solar_inst_endmonth ~ d_solar_pre37_bin + d_solar_pre.[35:1]  + new_mw_solar+ d_solar_post.[1:24] + d_solar_post25_bin |id_municipio + month^ano)
+solar_comp_form<- xpd(solar_comp_endmonth ~ d_solar_pre37_bin + d_solar_pre.[35:1]  + new_mw_solar+ d_solar_post.[1:24] + d_solar_post25_bin |id_municipio + month^ano)
+solar_solarjob_form<- xpd(solar_jobs_endmonth ~ d_solar_pre37_bin + d_solar_pre.[35:1]  + new_mw_solar+ d_solar_post.[1:24] + d_solar_post25_bin |id_municipio + month^ano)
+solar_outside_form<- xpd(solar_jobs_outside_endmonth ~ d_solar_pre37_bin + d_solar_pre.[35:1]  + new_mw_solar+ d_solar_post.[1:24] + d_solar_post25_bin |id_municipio + month^ano)
+
+wind_total_form<- xpd(total_endmonth ~ d_wind_pre37_bin + d_wind_pre.[35:1] + d_wind_pre.[24:1] + new_mw_wind+ d_wind_post.[1:24] + d_wind_post25_bin |id_municipio + month^ano)
+wind_om_form<- xpd(wind_om_endmonth ~ d_wind_pre37_bin + d_wind_pre.[35:1] + d_wind_pre.[24:1] + new_mw_wind+ d_wind_post.[1:24] + d_wind_post25_bin |id_municipio + month^ano)
+wind_inst_form<- xpd(wind_inst_endmonth ~ d_wind_pre37_bin + d_wind_pre.[35:1] + d_wind_pre.[24:1] + new_mw_wind+ d_wind_post.[1:24] + d_wind_post25_bin |id_municipio + month^ano)
+wind_comp_form<- xpd(wind_comp_endmonth ~ d_wind_pre37_bin + d_wind_pre.[35:1] + d_wind_pre.[24:1] + new_mw_wind+ d_wind_post.[1:24] + d_wind_post25_bin |id_municipio + month^ano)
+wind_windjob_form<- xpd(wind_jobs_endmonth ~ d_wind_pre37_bin + d_wind_pre.[35:1] + d_wind_pre.[24:1] + new_mw_wind+ d_wind_post.[1:24] + d_wind_post25_bin |id_municipio + month^ano)
+wind_firms_form<- xpd(no_establishments_wind ~ d_wind_pre37_bin + d_wind_pre.[35:1] + d_wind_pre.[24:1] + new_mw_wind+ d_wind_post.[1:24] + d_wind_post25_bin |id_municipio + month^ano)
+
+
+#One sample with all matching subclass (treated& their control) where treated unit is not exposed to spill over
+solar_spill1<-solar_matched_final_monthly%>%group_by(subclass_solar)%>%
+  filter(all(solar_spill==0))
+wind_spill1<-wind_matched_final_monthly%>%group_by(subclass_wind)%>%
+  filter(all(wind_spill==0))
+
+#Second sample with all matching subclass (treated& their control) where treated unit is exposed to spill over
+solar_spill2<-solar_matched_final_monthly%>%group_by(subclass_solar)%>%
+  filter(any(solar_spill==1))
+wind_spill2<-wind_matched_final_monthly%>%group_by(subclass_wind)%>%
+  filter(any(wind_spill==1))
+
+other_spill_solar1<-solar_matched_final_monthly%>%group_by(subclass_solar)%>%
+  filter(all(other_spill==0))
+other_spill_solar2<-solar_matched_final_monthly%>%group_by(subclass_solar)%>%
+  filter(any(other_spill==1))
+
+other_spill_wind1<-wind_matched_final_monthly%>%group_by(subclass_wind)%>%
+  filter(all(other_spill==0))
+other_spill_wind2<-wind_matched_final_monthly%>%group_by(subclass_wind)%>%
+  filter(any(other_spill==1))
+
+
+solar_solarjobs_spill<-extract_coeffs2(solar_solarjob_form,solar_spill1,solar_spill2,-37,25, "no other solar park within 50km", "other municipality with solar park within 50km", "solar","solar_solarjobs_spill.png", "a.Solar: sector-related jobs")
+
+solar_other_spill<-extract_coeffs2(solar_solarjob_form,other_spill_solar1,other_spill_solar2,-37,25, "no other power plant within 50km", "other power plant investment within 50km", "solar","solar_otherspill.png", "a. Solar: sector-related jobs")
+
+
+wind_windjobs_spill<-extract_coeffs2(wind_windjob_form,wind_spill1,wind_spill2,-37,25, "no other wind park within 50km", "other wind park within 50km", "wind","wind_windjob_spill.png", "b. Wind: sector-related jobs")
+
+wind_other_spill<-extract_coeffs2(wind_windjob_form,other_spill_wind1,other_spill_wind2,-37,25, "no other power plant within 50km", "other power plant  within 50km", "wind","wind_otherspill.png", "b. Wind: sector-related jobs")
+
+library(patchwork)
+spillover2_1<-solar_solarjobs_spill+wind_windjobs_spill
+ggsave(spillover2_1, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix", "wind_solar_spill_new.png"),units="px", width = 2000, height=1000)
+
+#get summary output for number of observations
+first_spill1_solar<-feols(solar_solarjob_form, solar_spill1, cluster = "id_municipio")
+second_spill2_solar<-feols(solar_solarjob_form, solar_spill2, cluster = "id_municipio")
+summary(first_spill1_solar)
+summary(second_spill2_solar)
+
+first_spill1_wind<-feols(wind_windjob_form, wind_spill1, cluster = "id_municipio")
+second_spill2_wind<-feols(wind_windjob_form, wind_spill2, cluster = "id_municipio")
+summary(first_spill1_wind)
+summary(second_spill2_wind)
+```
+
+Spillover impact:Difference first-movers vs. second or third mover
+```{r}
+solar_matched_final_monthly<-solar_matched_final_monthly%>%
+  group_by(id_municipio)%>%
+  mutate(solar_first_mover=if_else(solar_treat_postmatch==1& t_solar==0 & (is.na(t_othersolar) | t_othersolar <0), 1,0))
+
+first_movers_solar<-solar_matched_final_monthly%>%group_by(id_municipio)%>% filter(any(solar_first_mover==1) &  t_solar==0 )%>%distinct(id_municipio,solar_treat_postmatch,ano)
+
+second_movers_solar<-solar_matched_final_monthly%>%group_by(id_municipio)%>% filter(any(solar_first_mover==0, t_solar==0) )%>%distinct(id_municipio,solar_treat_postmatch)
+
+#replace all other rows into 1's
+solar_matched_final_monthly$solar_first_mover[solar_matched_final_monthly$id_municipio %in% first_movers_solar$id_municipio]<-1
+
+first_solar<-solar_matched_final_monthly%>%group_by(subclass_solar)%>%filter(any(solar_first_mover==1))
+second_solar<-solar_matched_final_monthly%>%group_by(subclass_solar)%>%filter(all(solar_first_mover==0))
+  
+solar_first_movers<-extract_coeffs2(solar_solarjob_form,first_solar,second_solar,-37,25, "1st municipality within 50km", "2nd+ municipality within 50km", "solar","solar_firstmovers.png", "a. Solar-related jobs")
+
+
+solar_first_movers_outside<-extract_coeffs2(solar_outside_form,first_solar,second_solar,-37,25, "1st municipality within 50km", "2nd+ municipality within 50km", "solar","solar_firstmovers_outside.png", "Solar-related jobs")
+
+#WIND: 
+wind_matched_final_monthly<-wind_matched_final_monthly%>%
+  group_by(id_municipio)%>%
+  mutate(wind_first_mover=if_else(wind_treat_postmatch==1& t_wind==0 & (is.na(t_otherwind) | t_otherwind <0), 1,0))
+
+first_movers_wind<-wind_matched_final_monthly%>%group_by(id_municipio)%>% filter(any(wind_first_mover==1) )%>%distinct(id_municipio)
+
+#replace all other rows into 1's
+wind_matched_final_monthly$wind_first_mover[wind_matched_final_monthly$id_municipio %in% first_movers_wind$id_municipio]<-1
+
+first_wind<-wind_matched_final_monthly%>%group_by(subclass_wind)%>%filter(any(wind_first_mover==1))
+second_wind<-wind_matched_final_monthly%>%group_by(subclass_wind)%>%filter(all(wind_first_mover==0))
+
+wind_first_movers<-extract_coeffs2(wind_windjob_form,first_wind,second_wind,-37,25, "1st municipality within 50km", "2nd+ municipality within 50km", "wind","wind_firstmovers.png", "b. Wind-related jobs")
+
+
+first_movers<-solar_first_movers+wind_first_movers
+ggsave(first_movers, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main", "first_vs_second.png"),units="px", width = 2000, height=1000)
+
+#get summary output for number of observations
+first_mover1_solar<-feols(solar_solarjob_form, first_solar, cluster = "id_municipio")
+second_mover2_solar<-feols(solar_solarjob_form, second_solar, cluster = "id_municipio")
+summary(first_mover1_solar)
+summary(second_mover2_solar)
+
+first_mover1_wind<-feols(wind_windjob_form, first_wind, cluster = "id_municipio")
+second_mover2_wind<-feols(wind_windjob_form, second_wind, cluster = "id_municipio")
+summary(first_mover1_wind)
+summary(second_mover2_wind)
+```
+
+EARLY VS. LATE
+```{r}
+#EARLY vs. LATE SOLAR
+early_solar<-solar_matched_final_monthly%>%group_by(subclass_solar)%>%filter(any(t_solar==0 & ano<2018))
+late_solar<-solar_matched_final_monthly%>%group_by(subclass_solar)%>%filter(any(t_solar==0 & ano>=2018))
+
+solar_time<-extract_coeffs2(solar_solarjob_form,early_solar,late_solar,-37,25, "First solar plant before 2018", "First Solar plant in/after 2018", "solar", "solar_inst_early.vs.late.png", "a. Solar: sector-related jobs")
+
+extract_coeffs2(solar_total_form,early_solar,late_solar,-37,25, "First solar plant before 2020", "First Solar plant in/after 2020", "solar", "solar_total_early.vs.late.png", "Total jobs")
+
+#EARLY VS. LATE WIND
+
+early_wind<- wind_matched_final_annual%>%filter(year_first_treat_wind<2015)%>%distinct(subclass_wind)
+late_wind<- wind_matched_final_annual%>%filter(year_first_treat_wind>=2015 & year_first_treat_wind<2019)%>%distinct(subclass_wind)
+early_sample<-wind_matched_final_monthly%>%filter(subclass_wind %in% early_wind$subclass_wind)
+late_sample<-wind_matched_final_monthly%>%filter(subclass_wind %in% late_wind$subclass_wind)
+
+extract_coeffs2(wind_total_form,early_sample,late_sample,-37,25, "First wind plant before 2015", "First wind plant in/after 2015", "wind", "wind_total_early.vs.late.png", "Total")
+
+
+wind_time<-extract_coeffs2(wind_windjob_form,early_sample,late_sample,-37,25, "First wind plant before 2015", "First wind plant in/after 2015", "wind", "wind_windjobs_early.vs.late.png", "b. Wind: sector-related jobs")
+
+extract_coeffs2(wind_inst_form,early_sample,late_sample,-37,25, "First wind plant before 2015", "First wind plant in/after 2015", "wind", "wind_inst_early.vs.late.png", "Wind: Installation Jobs")
+
+extract_coeffs2(wind_firms_form,early_sample,late_sample,-37,25, "First wind plant before 2015", "First wind plant in/after 2015", "wind", "wind_firms_early.vs.late.png", "No. of new firms registered")
+
+early_late<-solar_time+wind_time
+ggsave(early_late, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main", "early_vs_late.png"),units="px", width = 2000, height=1000)
+
+early_solar1<-feols(solar_solarjob_form, early_solar, cluster = "id_municipio")
+late_solar2<-feols(solar_solarjob_form, late_solar, cluster = "id_municipio")
+summary(early_solar1)
+summary(late_solar2)
+
+early_wind1<-feols(wind_windjob_form, early_sample, cluster = "id_municipio")
+late_wind2<-feols(wind_windjob_form, late_sample, cluster = "id_municipio")
+summary(early_wind1)
+summary(late_wind2)
+```
+
+
+lcr 
+```{r}
+lcr<-solar_matched_final_monthly%>%select(id_municipio, month, ano, new_mw_solar, lcr_municipality, subclass_solar, solar_treat_postmatch)
+#lcr vs. no lcr
+solar_lcr1<-solar_matched_final_monthly%>%
+  group_by(subclass_solar)%>%
+  filter(any(lcr_municipality==1))
+solar_lcr2<-solar_matched_final_monthly%>%
+  group_by(subclass_solar)%>%
+  filter(all(lcr_municipality==0))
+
+wind_lcr1<-wind_matched_final_monthly%>%
+  group_by(subclass_wind)%>%
+  filter(any(lcr_municipality==1))
+wind_lcr2<-wind_matched_final_monthly%>%
+  group_by(subclass_wind)%>%
+  filter(all(lcr_municipality==0))
+
+solar_solarjob_lcr_plot<-extract_coeffs2(solar_solarjob_form,solar_lcr1,solar_lcr2,-37,25, "with local content requirement", "without local content requirement", "solar", "solar_lcr.png", "a. Solar: sector-specific jobs")
+
+wind_windjob_lcr_plot<-extract_coeffs2(wind_windjob_form,wind_lcr1,wind_lcr2,-37,25, "with local content requirement", "without local content requirement", "wind", "wind_lcr.png", "b. Wind: sector-specific jobs")
+
+lcr2_1<-solar_solarjob_lcr_plot+wind_windjob_lcr_plot
+#ggsave(lcr2_1, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix", "wind_solar_lcr.png"),units="px", width = 2000, height=1000)
+
+lcr_solar1<-feols(solar_solarjob_form, solar_lcr1, cluster = "id_municipio")
+lcr_solar2<-feols(solar_solarjob_form, solar_lcr2, cluster = "id_municipio")
+summary(lcr_solar1)
+summary(lcr_solar2)
+
+lcr_wind1<-feols(wind_windjob_form, wind_lcr1, cluster = "id_municipio")
+lcr_wind2<-feols(wind_windjob_form, wind_lcr2, cluster = "id_municipio")
+summary(lcr_wind1)
+summary(lcr_wind2)
+
+```
+
+Size-related heterogeneity
+```{r}
+#Check out median and distribution
+median_solar <- solar_matched_final_monthly %>%
+  filter(t_solar == 0, solar_treat_postmatch == 1) %>%
+  ungroup() %>%
+  pull(new_mw_solar) %>%
+  median()
+
+solar_matched_final_monthly %>%
+  filter(t_solar == 0, solar_treat_postmatch == 1) %>%
+  ungroup() %>%
+  select(new_mw_solar) %>%
+  ggplot(aes(x = new_mw_solar)) +
+  geom_histogram() +
+  geom_vline(aes(xintercept = median_solar), color = "red", linetype = "dashed") +
+  annotate("text", x = median_solar, y = Inf, label = paste("Median:", round(median_solar, 2)), vjust = 2, color = "red")
+
+median_wind <- wind_matched_final_monthly %>%
+  filter(t_wind == 0, wind_treat_postmatch == 1) %>%
+  ungroup() %>%
+  pull(new_mw_wind) %>%
+  median()
+
+wind_matched_final_monthly %>%
+  filter(t_wind == 0, wind_treat_postmatch == 1) %>%
+  ungroup() %>%
+  select(new_mw_wind) %>%
+  ggplot(aes(x = new_mw_wind)) +
+  geom_histogram() +
+  geom_vline(aes(xintercept = median_wind), color = "red", linetype = "dashed") +
+  annotate("text", x = median_wind, y = Inf, label = paste("Median:", round(median_wind, 2)), vjust = 2, color = "red")
+
+
+#Split sample into above-median and below median cases
+solar_size1<-solar_matched_final_monthly%>%group_by(id_municipio)%>%
+  filter((t_solar == 0 & new_mw_solar>=60)| (solar_treat_postmatch==0))%>%distinct(id_municipio, subclass_solar)%>%
+  group_by(subclass_solar)%>%
+  mutate(n=n())%>%
+  filter(n>1)
+solar_size2<-solar_matched_final_monthly%>%group_by(id_municipio)%>%
+  filter((t_solar == 0 & new_mw_solar<60)| (solar_treat_postmatch==0))%>%distinct(id_municipio, subclass_solar)%>%
+  group_by(subclass_solar)%>%
+  mutate(n=n())%>%
+  filter(n>1)
+solar_sizedf1<-solar_matched_final_monthly%>%filter(id_municipio %in% solar_size1$id_municipio)
+solar_sizedf2<-solar_matched_final_monthly%>%filter(id_municipio %in% solar_size2$id_municipio)
+
+wind_size1<-wind_matched_final_monthly%>%group_by(id_municipio)%>%
+  filter((t_wind == 0 & new_mw_wind>=50)| (wind_treat_postmatch==0))%>%distinct(id_municipio, subclass_wind)%>%
+  group_by(subclass_wind)%>%
+  mutate(n=n())%>%
+  filter(n>1)
+wind_size2<-wind_matched_final_monthly%>%group_by(id_municipio)%>%
+  filter((t_wind == 0 & new_mw_wind<50)| (wind_treat_postmatch==0))%>%distinct(id_municipio, subclass_wind)%>%
+  group_by(subclass_wind)%>%
+  mutate(n=n())%>%
+  filter(n>1)
+wind_sizedf1<-wind_matched_final_monthly%>%filter(id_municipio %in% wind_size1$id_municipio)
+wind_sizedf2<-wind_matched_final_monthly%>%filter(id_municipio %in% wind_size2$id_municipio)
+
+solar_solarjob_size_plot<-extract_coeffs2(solar_solarjob_form,solar_sizedf1,solar_sizedf2,-37,25, ">= 60 MW", "< 60 MW", "solar", "solar_lcr.png", "a. Solar: sector-specific jobs")
+
+wind_windjob_size_plot<-extract_coeffs2(wind_windjob_form,wind_sizedf1,wind_sizedf2,-37,25, ">= 50 MW", "<50 MW", "wind", "wind_lcr.png", "b. Wind: sector-specific jobs")
+
+
+size12<-solar_solarjob_size_plot+wind_windjob_size_plot
+ggsave(size12, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix", "wind_solar_size.png"),units="px", width = 2000, height=1000)
+
+size_solar1<-feols(solar_solarjob_form, solar_sizedf1, cluster = "id_municipio")
+size_solar2<-feols(solar_solarjob_form, solar_sizedf2, cluster = "id_municipio")
+summary(size_solar1)
+summary(size_solar2)
+
+size_wind1<-feols(wind_windjob_form, wind_sizedf1, cluster = "id_municipio")
+size_wind2<-feols(wind_windjob_form, wind_sizedf2, cluster = "id_municipio")
+summary(size_wind1)
+summary(size_wind2)
+```
+
+
+Annual heterogeneity
+```{r}
+early_annual_wind<- wind_matched_final_annual%>%filter(subclass_wind %in% early_wind$subclass_wind)
+late_annual_wind<- wind_matched_final_annual%>%filter(subclass_wind %in% late_wind$subclass_wind)
+early_annual_solar<-solar_matched_final_annual%>%group_by(subclass_solar)%>%filter(any(t_solar==0 & ano<2018))
+late_annual_solar<-solar_matched_final_annual%>%group_by(subclass_solar)%>%filter(any(t_solar==0 & ano>=2018))
+
+wind_gdppc_form<- xpd(gdp_pc ~ d_wind_pre7_bin + d_wind_pre.[6:4]+ d_wind_pre.[2:1]  + new_mw_wind+ d_wind_post.[1:5] +d_wind_post6_bin|id_municipio + ano)
+solar_gdppc_form<- xpd(gdp_pc ~ d_solar_pre7_bin + d_solar_pre.[6:4] + d_solar_pre.[2:1] + new_mw_solar+ d_solar_post.[1:2] +d_solar_post3_bin|id_municipio + ano)
+
+wind_gdppc<-extract_coeffs_annual(wind_gdppc_form,early_annual_wind,late_annual_wind,-7,6, "First wind plant before 2015", "First wind plant in/after 2015", "wind", "wind_earlylate_annual.png", "b. Wind: GDP p.c.")
+
+solar_gdppc<-extract_coeffs_annual(solar_gdppc_form,early_annual_solar,late_annual_solar,-7,3, "First solar plant before 2018", "First solar plant in/after 2018", "solar", "solar_earlylate_annual.png", "a. Solar: GDP p.c.")
+
+gdppc_annual<-solar_gdppc+wind_gdppc
+ggsave(gdppc_annual, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix", "gdppc_earlylate.png"),units="px", width = 2000, height=1000)
+```
+
+Are first-movers structurally different from second movers? 
+```{r}
+first_vs_second<-solar_matched_final_monthly%>%filter(solar_treat_postmatch==1, t_solar==0)%>%ungroup()%>%
+  distinct(id_municipio, solar_first_mover)
+first_vs_second <- first_vs_second %>%
+    distinct(id_municipio, .keep_all = TRUE)
+
+solar_matched_final_annual<-solar_matched_final_annual%>%ungroup()%>%left_join(first_vs_second, by=c("id_municipio"))
+
+first_vs_second_wind<-wind_matched_final_monthly%>%filter(wind_treat_postmatch==1, t_wind==0)%>%ungroup()%>%
+  distinct(id_municipio, wind_first_mover)
+first_vs_second_wind <- first_vs_second_wind %>%
+    distinct(id_municipio, .keep_all = TRUE)
+
+wind_matched_final_annual<-wind_matched_final_annual%>%ungroup()%>%left_join(first_vs_second_wind, by=c("id_municipio"))
+
+first_second_data<-solar_matched_final_annual%>%filter(!is.na(solar_first_mover))%>%
+  filter(t_solar %in% c(-4))%>%
+  mutate(total_solar_jobs=solar_component_jobs_3112_total+solar_om_jobs_3112_total+solar_installation_jobs_3112_total)%>%
+  select(id_municipio,municipality_name, sigla_uf,subclass_solar, populacao, total_jobs_3112, primary_edu_3112, secondary_edu_3112,tertiary_edu_3112, avg_wage_2020_BRL, total_establishment, total_solar_jobs, spending_pc, total_receipt_pc, munic_index_general, spending_energy, spending_environ, spending_infra, solar_first_mover, weights_solar, pib_clean_constant2020_BRL, gdp_pc, employment_growth, private_est_total, irradiation_2017)%>%ungroup
+
+
+#Number of observations
+solar_first<-length(unique(first_second_data$id_municipio[first_second_data$solar_first_mover==1]))
+solar_second<-length(unique(first_second_data$id_municipio[first_second_data$solar_first_mover==0]))
+nobs_solar_post <- data.frame(Variable="All", "Mean First-Movers" = solar_first, "Mean Second Movers" = solar_second)%>%
+  rename(`Mean T (Matched)`=2,
+         `Mean C (Matched)`=3)
+                              
+
+#Matching Command Solar
+library(cobalt)
+first_second<-bal.tab(first_second_data%>%select(-solar_first_mover, -weights_solar,-id_municipio,-sigla_uf,-municipality_name,-subclass_solar), treat = first_second_data$solar_first_mover, weights = first_second_data$weights_solar,
+        binary = "std", continuous = "std", disp= "means", stats="mean.diffs")
+
+
+first_second_df<-as.data.frame(first_second$Balance)
+first_second_df<-rownames_to_column(first_second_df, "Variable")
+first_second_df<-first_second_df%>%select(1,6:8)%>%
+  rename(`Mean C (Matched)`=2,
+         `Mean T (Matched)`=3,
+         `Std. Diff.(Matched)`=4)
+
+library(stringr)
+first_second_df<-bind_rows(first_second_df,nobs_solar_post)%>%
+  filter(!str_detect(Variable, "<NA>$"))
+
+#Merge together pre and post-matching data and transform to latex
+vars_nice<- c("Population", "No. of workers", "No. of workers with primary education", "No. of workers with secondary education",
+              "No. of workers with tertiary education", "Wage in 2020 BRL", "No. of firms", "No. of workers in solar-related sector",
+              "Municipal spending p.c.", "Municipal receipts p.c.", "Municipal development index", "Municipal spending on energy",
+              "Municipal spending on environment", "Municipal spending on other infrastructure", "GDP (2020 BRL)", "GDP p.c. (2020 BRL)", "Growth in no. of workers (%)", "No. of private-sector firms", "Irradition", "N")
+first_second_df$Variable<-vars_nice
+
+#include commas for each 3 digits
+columns_to_format <- 2:4  # You can change this to 2:7 to include all relevant columns
+first_second_df[, columns_to_format] <- sapply(first_second_df[, columns_to_format], function(x) {
+  format(round(x,2), big.mark = ",", decimal.mark = ".")
+})
+solar_baltab2_df_tex<-xtable(first_second_df, type="latex", digits = 2)
+
+
+print(solar_baltab2_df_tex, include.rownames = FALSE,  file=here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","solar_first_second_baltab.png"))
+```
+
+First-vs.second movers means comparision over time
+```{r}
+calculate_summary <- function(data, variables, group_vars) {
+  # Ensure group_vars are quosures for flexibility
+  group_vars <- syms(group_vars)
+  
+  # Iterate over variables and calculate summaries
+  map_dfr(variables, function(var) {
+    data %>%
+      group_by(!!!group_vars) %>% # Group by dynamic variables
+      summarize(
+        mean = mean(.data[[var]], na.rm = TRUE),
+        ci_lower = mean(.data[[var]], na.rm = TRUE) - qt(0.975, df = n() - 1) * sd(.data[[var]], na.rm = TRUE) / sqrt(n()),
+        ci_upper = mean(.data[[var]], na.rm = TRUE) + qt(0.975, df = n() - 1) * sd(.data[[var]], na.rm = TRUE) / sqrt(n()),
+        .groups = "drop"
+      ) %>%
+      mutate(variable = var) # Add variable name
+  })
+}
+
+# Example usage
+# List of variables to summarize
+wind_vars_month <- c("wind_inst_endmonth", "wind_om_endmonth", "wind_comp_endmonth","total_endmonth") # Replace with your variable names
+solar_vars_month <- c("solar_inst_endmonth", "solar_om_endmonth", "solar_comp_endmonth","total_endmonth") # Replace with your variable names
+wind_vars_annual <- c("pib_clean_constant2020_BRL","va_industria_constant2020_BRL","va_servicos_constant2020_BRL", "total_spending", "total_receipt_BRL2020","total_establishment","populacao","total_jobs_3112") #
+solar_vars_annual <- c("pib_clean_constant2020_BRL","va_industria_constant2020_BRL","va_servicos_constant2020_BRL", "total_spending", "total_receipt_BRL2020","total_establishment","populacao","total_jobs_3112") #
+
+# Grouping variables
+wind_group2 <- c("wind_first_mover", "t_wind") # Replace with your grouping variables
+solar_group2 <- c("solar_first_mover", "t_solar") # Replace with your grouping variables
+
+
+# Call the function
+wind_means_monthly <- calculate_summary(
+  data = wind_matched_final_monthly%>%filter(wind_treat_postmatch==1), 
+  variables = wind_vars_month, 
+  group_vars = wind_group2
+)
+
+wind_means_annual <- calculate_summary(
+  data = wind_matched_final_annual%>%filter(wind_treat_postmatch==1), 
+  variables = wind_vars_annual, 
+  group_vars = wind_group2
+)
+
+solar_means_monthly <- calculate_summary(
+  data = solar_matched_final_monthly%>%filter(solar_treat_postmatch==1), 
+  variables = solar_vars_month, 
+  group_vars = solar_group2
+)
+
+
+solar_means_annual <- calculate_summary(
+  data = solar_matched_final_annual%>%filter(solar_treat_postmatch==1), 
+  variables = solar_vars_annual, 
+  group_vars = solar_group2
+)
+
+wind_month_labels <- c(
+  "total_endmonth" = "Total Jobs",
+  "wind_comp_endmonth" = "Component",
+  "wind_inst_endmonth" = "Installation",
+  "wind_om_endmonth"="O&M", 
+  "wind_other_jobs_endmonth"= "Other sectors")
+
+solar_month_labels <- c(
+  "total_endmonth" = "Total Jobs",
+  "solar_comp_endmonth" = "Component",
+  "solar_inst_endmonth" = "Installation",
+  "solar_om_endmonth"="O&M", 
+  "solar_other_jobs_endmonth"= "Other sectors")
+
+
+annual_labels <- c(
+  "pib_clean_constant2020_BRL" = "GDP",
+  "va_industria_constant2020_BRL" = "Industry value-added",
+  "va_servicos_constant2020_BRL" = "Services value-added",
+  "total_spending"="Total Spending", 
+  "total_receipt_BRL2020"= "Total Receipt",
+  "total_establishment"="Total no. of active firms",
+  "populacao"="Total Population",
+  "total_jobs_3112"="Total Employment")
+
+wind_means_month<-ggplot(wind_means_monthly %>% filter(t_wind > -37, t_wind < 37), 
+       aes(x = t_wind, y = mean, color = as.factor(wind_first_mover))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper, fill = as.factor(wind_first_mover)), alpha = 0.2) + geom_vline(xintercept = 0)+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = wind_month_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Months before/after commissioning",
+    y = "Avg. No of Jobs",
+    color =  "Second-mover Municipalities (0)/ First-Mover Municiaplities (1)",
+    fill =  "Second-mover Municipalities (0)/ First-Mover Municiaplities (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","wind_means_monthly_first_second.png"),wind_means_month,  width = 3000, height=2000, units = "px")
+
+wind_annual_mean<-ggplot(wind_means_annual %>% filter(t_wind > -7, t_wind < 5), 
+       aes(x = t_wind, y = mean, color = as.factor(wind_first_mover))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper, fill = as.factor(wind_first_mover)), alpha = 0.2) + geom_vline(xintercept = 0)+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = annual_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Years before/after commissioning",
+    y = "",
+    color = "Second-mover Municipalities (0)/ First-Mover Municiaplities (1)",
+    fill = "Second-mover Municipalities (0)/ First-Mover Municiaplities (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","wind_means_annual_first_second.png"),wind_annual_mean,  width = 3000, height=2000, units = "px")
+
+
+solar_month_mean<-ggplot(solar_means_monthly %>% filter(t_solar > -48, t_solar < 37), 
+       aes(x = t_solar, y = mean, color = as.factor(solar_first_mover))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper, fill = as.factor(solar_first_mover)), alpha = 0.2) + geom_vline(xintercept = 0)+ geom_vline(xintercept = -24, linetype="dashed")+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = solar_month_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Months before/after commissioning",
+    y = "Avg. No of Jobs",
+    color =  "Second-mover Municipalities (0)/ First-Mover Municiaplities (1)",
+    fill =  "Second-mover Municipalities (0)/ First-Mover Municiaplities (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","solar_means_monthly_first_second.png"),solar_month_mean,  width = 3000, height=2000, units = "px")
+
+solar_annual_mean<-ggplot(solar_means_annual %>% filter(t_solar > -7, t_solar < 5), 
+       aes(x = t_solar, y = mean, color = as.factor(solar_first_mover))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper, fill = as.factor(solar_first_mover)), alpha = 0.2) + geom_vline(xintercept = 0)+ # Ribbon for CI
+   geom_vline(xintercept = -2, linetype="dashed")+ 
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = annual_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Years before/after commissioning",
+    y = "",
+    color = "Second-mover Municipalities (0)/ First-Mover Municiaplities (1)",
+    fill = "Second-mover Municipalities (0)/ First-Mover Municiaplities (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","solar_means_annual_first_second.png"),solar_annual_mean,  width = 3000, height=2000, units = "px")
+```
+

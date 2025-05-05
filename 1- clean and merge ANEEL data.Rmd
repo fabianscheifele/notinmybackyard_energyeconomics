@@ -1,0 +1,231 @@
+---
+title: "test"
+author: "Fabian Scheifele"
+date: "2022-12-19"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+1. load relevant Packages
+```{r setup, include=FALSE}
+suppressMessages(memory.limit(size = NA))
+
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","knitr","here", "tidyverse" , "anytime" , "data.table", "corrplot", "naniar", "fuzzyjoin","expss", "janitor","readr", "data.table", "labelled", "countrycode","grep", "economiccomplexity","xtable","ggbump", "cowplot","ggrepel", "survival", "basedosdados", "bigrquery"))
+
+
+`%notin%` <- Negate(`%in%`)
+```
+
+2. load raw datasets
+```{r}
+aneel_generation<-fread(here("raw","siga-empreendimentos-geracao.csv"), sep = ';', encoding = "Latin-1")
+auction_file<-fread(here("raw","resultado-leiloes-geracao.csv"), sep = ';', encoding = "Latin-1")
+municipality_id<-readRDS(here("raw","geodata_municipios.RDS"))
+
+operators<-read.csv(here("raw","agentes-geracao-energia-eletrica.csv"), sep = ';', encoding = "latin1")%>%select(2,3,4,7,8)
+```
+
+3. Merge operator names with plant-level data (better merge long than wide)
+```{r}
+#left join the data
+aneel_generation<-aneel_generation%>%left_join(operators, by=c("IdeNucleoCEG"))
+
+#2 removing duplicate plants (due to different contract types for the same plant)
+
+distinct<-aneel_generation%>%distinct(IdeNucleoCEG, NomAgente)
+duplicated<-aneel_generation%>%group_by(IdeNucleoCEG, NomAgente)%>%mutate(no=n())
+
+aneel_generation <- aneel_generation %>%
+  distinct(IdeNucleoCEG, NomAgente, .keep_all = TRUE) %>%
+  mutate(exploitation_regime = case_when(
+    str_detect(DscPropriRegimePariticipacao, "(PIE)") ~ "IPP", 
+    str_detect(DscPropriRegimePariticipacao, "(SP)") ~ "Public Service", 
+    str_detect(DscPropriRegimePariticipacao, "(APE)") ~ "Self-producer", 
+    str_detect(DscPropriRegimePariticipacao, "(REG)") ~ "registered (<=5MW)",
+    TRUE ~ NA_character_
+  ))
+
+na_regime<-aneel_generation%>%filter(is.na(exploitation_regime))    
+    
+aneel_generation <- aneel_generation %>%select(-DscPropriRegimePariticipacao)
+remove(duplicated)
+```
+
+
+4. Clean Generation files to get ready for merge
+```{r}
+aneel_generation$year_operation<-substr(aneel_generation$DatEntradaOperacao,1,4)
+aneel_generation$year_operation<-as.numeric(aneel_generation$year_operation)
+
+#To have year-ending panel take only until 2022 (newest data will have some 2023 values)
+aneel_generation<-aneel_generation%>%filter(year_operation<=2022)
+
+#Separate the DScMunicipalities variable  here
+aneel_generation <- aneel_generation %>% separate(DscMuninicpios, into = c('DscMuninicpios', 'DscMuninicpios_2', 'DscMuninicpios_3',
+                                                                           'DscMuninicpios_4', 'DscMuninicpios_5', 'DscMuninicpios_6'), sep = ",")
+
+#Bring the municipality names into long format
+aneel_generation<-pivot_longer(aneel_generation, cols = c('DscMuninicpios', 'DscMuninicpios_2', 'DscMuninicpios_3',
+                                                                           'DscMuninicpios_4', 'DscMuninicpios_5', 'DscMuninicpios_6'), 
+                               names_to = "wide_var", values_to = "municipality")
+aneel_generation<-aneel_generation%>%filter(!is.na(municipality))%>%select(-wide_var)
+
+distinct<-aneel_generation%>%distinct(municipality,IdeNucleoCEG, NomAgente)
+remove(distinct)
+
+
+```
+
+5. Merge auction and generation (first order and take distinct generation units)
+```{r}
+#First check auction file for multiple auctions per IdeNucleoCEG and keep only the first auction participation
+auction_file<-auction_file%>%arrange(IdeNucleoCEG, DatLeilao)
+duplicates<-auction_file%>%
+  group_by(IdeNucleoCEG)%>%
+  mutate(no_auction=n_distinct(NumLeilao))%>%filter(no_auction>1)%>%
+  select(DatLeilao, NumLeilao, IdeNucleoCEG,no_auction)
+
+
+auction_file_distinct<-auction_file%>%distinct(IdeNucleoCEG, .keep_all=TRUE)%>%select(2,4,9,26)
+auction_generation<-left_join(aneel_generation, auction_file_distinct, by='IdeNucleoCEG')%>%
+  mutate(auction=case_when(!is.na(AnoLeilao)~1, TRUE~0))
+
+
+remove(duplicates)
+remove(distinct)
+remove(auction_file_distinct)
+remove(aneel_generation)
+
+#remove irrelavant columns
+auction_generation<-auction_generation%>%select(-CodCEG,-DatGeracaoConjuntoDados,-DscSubBacia, -DscFonteCombustivel,-NomFonteCombustivel,-DscTipoOutorga,-IdcGeracaoQualificada)%>%
+  rename(mw_authorized=MdaPotenciaOutorgadaKw)%>%
+  rename(mw_operation=MdaPotenciaFiscalizadaKw)%>%
+  rename(mw_assured=MdaGarantiaFisicaKw)%>%rename(lat=NumCoordNEmpreendimento)%>%
+  rename(lon=NumCoordEEmpreendimento)%>%
+  rename(startdate_concession=DatInicioVigencia)%>%
+  rename(enddate_concession=DatFimVigencia)
+
+#change variable names and clean
+auction_generation$mw_authorized<- as.numeric(gsub(",", ".",auction_generation$mw_authorized))
+auction_generation$mw_operation<- as.numeric(gsub(",", ".",auction_generation$mw_operation))  
+auction_generation$mw_assured<- as.numeric(gsub(",", ".",auction_generation$mw_assured))  
+auction_generation$PctParticipacao<- as.numeric(gsub(",", ".",auction_generation$PctParticipacao)) 
+
+auction_generation<-auction_generation%>%
+  mutate(mw_authorized=(mw_authorized/1000))%>%
+  mutate(mw_operation=(mw_operation/1000))%>%
+  mutate(mw_assured=(mw_assured/1000))
+  
+auction_generation$lon<- as.numeric(gsub(",", ".",auction_generation$lon))
+auction_generation$lat<- as.numeric(gsub(",", ".",auction_generation$lat))  
+```
+
+
+6. merge municipality information with ANEEL data (from Step 4)
+```{r}
+municipality_id$municipality <- paste(municipality_id$nome_municipio, " - ", municipality_id$sigla_uf)
+
+#create row_id to be able to group later
+auction_generation<- auction_generation%>%mutate(id=row_number())
+auction_generation$municipality<-str_trim(auction_generation$municipality)
+municipality_id$municipality<-str_trim(municipality_id$municipality)
+
+
+
+#Correct individual entries to be found
+auction_generation$municipality[auction_generation$id==233]<-"São Gabriel da Cachoeira - AM"
+
+matchDistance <- stringdist_join(
+                  auction_generation, municipality_id,
+                   by           = "municipality",
+                   mode         = "left",
+                   ignore_case  = TRUE, 
+                   method       = "jw", 
+                   max_dist     = 0.15,
+                  distance_col = "dist")
+
+#when selecting matches you have to group by Plant ID because you want to keep all plants
+auction_generation_final <-matchDistance%>%
+                group_by(id) %>%
+                slice_min(dist,n=1, with_ties = FALSE)
+
+quality_check<-auction_generation_final%>%select(municipality.x, municipality.y, dist,lon,lat,geometria )
+
+#new municipality thats why not found
+
+sum(is.na(auction_generation_final$id_municipio))
+
+
+nas<-auction_generation_final%>%
+  filter(is.na(id_municipio))%>%
+  select(id_municipio, SigUFPrincipal, municipality.x, municipality.y, lon,lat)
+
+#manual because tolerance cannot be increased
+auction_generation_final$municipality.x[auction_generation_final$id==1252]<-"Lagoa de Itaenga - PB"
+auction_generation_final$municipality.y[auction_generation_final$id==1252]<-"Lagoa de Itaenga - PB"
+auction_generation_final$id_municipio[auction_generation_final$id==1252]<-2608503
+
+auction_generation_final$municipality.x[auction_generation_final$id==1810]<-"Lagoa de Itaenga - PB"
+auction_generation_final$municipality.y[auction_generation_final$id==1810]<-"Lagoa de Itaenga - PB"
+auction_generation_final$id_municipio[auction_generation_final$id==1810]<-2608503
+
+auction_generation_final$id_municipio[auction_generation_final$id==2714]<-3520905
+auction_generation_final$municipality.x[auction_generation_final$id==2714]<-"Ipaussu - SP"
+auction_generation_final$municipality.y[auction_generation_final$id==2714]<-"Ipaussu - SP"
+
+auction_generation_final$municipality.x[auction_generation_final$id==3205]<-"Sete Lagoas - MG"
+auction_generation_final$municipality.y[auction_generation_final$id==3205]<-"Sete Lagoas - MG"
+auction_generation_final$id_municipio[auction_generation_final$id==3205]<-3167202
+
+
+auction_generation_final$municipality.x[auction_generation_final$id==3545]<-"Moji Mirim - SP"
+auction_generation_final$municipality.x[auction_generation_final$id==3545]<-"Moji Mirim - SP"
+auction_generation_final$id_municipio[auction_generation_final$id==3545]<-3530805
+
+auction_generation_final$municipality.x[auction_generation_final$id==23809]<-"Floriano - PI"
+auction_generation_final$municipality.y[auction_generation_final$id==23809]<-"Floriano - PI"
+auction_generation_final$id_municipio[auction_generation_final$id==23809]<-2203909
+
+auction_generation_final$id_municipio[auction_generation_final$id==6099]<-5006275
+auction_generation_final$municipality.y[auction_generation_final$id==6099]<-"Paraíso das Águas - MS"
+
+sum(is.na(auction_generation_final$id_municipio))
+#no more NAs
+remove(matchDistance)
+remove(nas)
+remove(quality_check)
+```
+
+7.Column renaming from Portuguese to English and saving the intermediate file
+```{r}
+#colomn renaming to English
+auction_generation_final <- auction_generation_final%>%select(-DscRegimeExploracao)
+auction_generation_final <- auction_generation_final %>%
+  rename(
+    station_name = 1,
+    plant_id = 2,
+    generation_type = 4,
+    plant_phase = 5,
+    fuel_source = 6,
+    operation_start_date = 7 ,
+    agent_name = 16,
+    participation = 17,
+    exploitation_regime = 18,
+    auction_year = 21,
+    auction_number = 22,
+    winnig_company = 23,
+    mun_id = 26,
+    mun_name = 27,
+    state = 28
+  )
+
+#save clean aneel generation file without bndes info
+saveRDS(auction_generation_final, here("intermediate","aneel_generation_nobndes.RDS"))
+```
+

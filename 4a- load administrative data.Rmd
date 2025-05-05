@@ -1,0 +1,706 @@
+---
+title: "2- load administrative data"
+author: "Fabian Scheifele"
+date: "2023-02-06"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+0. load packages
+```{r setup, include=FALSE}
+suppressMessages(memory.limit(size = NA))
+
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","knitr","here", "data.table","basedosdados","bigrquery", "dbplyr","janitor","fuzzyjoin","zoo", "purrr", "stringr"))
+
+`%notin%` <- Negate(`%in%`)
+```
+
+1. set the google cloud console ID and project
+```{r}
+#PLEASE ENTER YOUR OWN BILLING ID from Google Console
+set_billing_id("")
+```
+
+
+
+5. PIB, population and 
+```{r}
+pib<-basedosdados::read_sql(query="SELECT * FROM `basedosdados.br_ibge_pib.municipio`")
+saveRDS(pib,here("raw","pib.RDS"))
+population<-basedosdados::read_sql(query="SELECT * FROM `basedosdados.br_ibge_populacao.municipio`
+    WHERE ano BETWEEN 2000 AND 2022")
+saveRDS(population,here("raw","population.RDS") )
+```
+
+6. SICONFI
+```{r}
+siconfi_spending <- basedosdados::read_sql(query = "SELECT ano, id_municipio, id_conta_bd, valor FROM `basedosdados.br_me_siconfi.municipio_despesas_funcao`
+  WHERE ano BETWEEN 2000 AND 2023
+    AND estagio_bd = 'Despesas Empenhadas'
+    AND id_conta_bd IN (
+      '3.00.000',
+      '3.08.000',
+      '3.09.000',
+      '3.10.000',
+      '3.11.000',
+      '3.12.000',
+      '3.15.000',
+      '3.16.000',
+      '3.17.000',
+      '3.18.000',
+      '3.19.000',
+      '3.20.000',
+      '3.21.000',
+      '3.22.000',
+      '3.23.000',
+      '3.25.000',
+      '3.26.000'
+    )
+")
+
+
+siconfi_spending<-siconfi_spending%>%separate(id_conta_bd, c("group", "subgroup", "subsubgroup"),remove = FALSE)
+saveRDS(siconfi_spending, here("raw","siconfi_spending.RDS"))
+
+siconfi_receipts<-basedosdados::read_sql(query=
+  "SELECT ano, id_municipio, estagio_bd, portaria, conta_bd, valor
+    FROM `basedosdados.br_me_siconfi.municipio_receitas_orcamentarias`
+   where ano between 2000 and 2023")
+saveRDS(siconfi_receipts,here("raw","siconfi_receipts.RDS") )
+
+
+categories<-basedosdados::read_sql(query="SELECT DISTINCT id_conta_bd, conta_bd, 
+      FROM `basedosdados.br_me_siconfi.municipio_despesas_funcao`")
+
+saveRDS(categories, here("raw","siconfi_spending_cats.RDS"))
+
+categories2<-basedosdados::read_sql(query="SELECT DISTINCT id_conta_bd, conta_bd, 
+      FROM `basedosdados.br_me_siconfi.municipio_receitas_orcamentarias`")
+
+saveRDS(categories2, here("raw","siconfi_receipt_cats.RDS"))
+```
+
+7. Broadband access
+```{r}
+#take broadband access at the end of the year as additional variable
+broadband<-basedosdados::read_sql(query=
+  "SELECT ano, id_municipio, acessos, densidade 
+  FROM `basedosdados.br_anatel_banda_larga_fixa.densidade_municipio` 
+  WHERE mes=12")
+#remove duplicates
+broadband_distinct<-broadband%>%distinct(ano, id_municipio, .keep_all = TRUE)
+saveRDS(broadband_distinct,here("raw","broadband_access.RDS"))
+```
+
+8. Municipal Development Index
+```{r}
+idfm_general<-read_excel(here("raw","IFDM Geral_2005 a 2016.xlsx"), col_names = FALSE)
+idfm_general <- idfm_general[-c(1,2),]
+idfm_general<-idfm_general %>%row_to_names(row_number = 1)%>%
+  clean_names()
+
+idfm_general<-idfm_general%>%
+  rename("2005"=nota)%>%
+  rename("2006"=nota_2)%>%
+  rename("2007"=nota_3)%>%
+  rename("2008"=nota_4)%>%
+   rename("2009"=nota_5)%>%
+   rename("2010"=nota_6)%>%
+   rename("2011"=nota_7)%>%
+   rename("2012"=nota_8)%>%
+   rename("2013"=nota_9)%>%
+   rename("2014"=nota_10)%>%
+   rename("2015"=nota_11)%>%
+   rename("2016"=nota_12)
+
+idfm_general<-idfm_general%>%
+  select(-starts_with("ranking"),-municipio,-regiao,-uf)
+
+idfm_long<-idfm_general %>% 
+  pivot_longer(
+    cols = `2005`:`2016`, 
+    names_to = "year",
+    values_to = "munic_index_general"
+)
+
+idfm_renda<-read_excel(here("raw","IFDM EmpregoRenda-2005-2016.xlsx"), col_names = FALSE)
+idfm_renda <- idfm_renda[-c(1,2),]
+idfm_renda<-idfm_renda %>%row_to_names(row_number = 1)%>%
+  clean_names()
+
+idfm_renda<-idfm_renda%>%
+  rename("2005"=nota)%>%
+  rename("2006"=nota_2)%>%
+  rename("2007"=nota_3)%>%
+  rename("2008"=nota_4)%>%
+   rename("2009"=nota_5)%>%
+   rename("2010"=nota_6)%>%
+   rename("2011"=nota_7)%>%
+   rename("2012"=nota_8)%>%
+   rename("2013"=nota_9)%>%
+   rename("2014"=nota_10)%>%
+   rename("2015"=nota_11)%>%
+   rename("2016"=nota_12)
+
+idfm_renda<-idfm_renda%>%
+  select(-starts_with("ranking"),-municipio,-regiao,-uf)
+
+idfm_renda_long<-idfm_renda %>% 
+  pivot_longer(
+    cols = `2005`:`2016`, 
+    names_to = "year",
+    values_to = "munic_index_renda"
+)
+
+idfm_long<-idfm_long%>%left_join(idfm_renda_long, by=c("codigo","year"))
+
+#2018 data
+idfm_2018<-read_excel(here("raw","IFDM 2018.xlsx"), col_names = FALSE)
+idfm_2018 <- idfm_2018[-c(1:6,8),]
+idfm_2018<-idfm_2018 %>%row_to_names(row_number = 1)%>%
+  clean_names()
+idfm_2018<-idfm_2018%>%
+  rename(codigo=na_2)%>%
+  rename(munic_index_general=ifdm)%>%
+  rename(munic_index_renda=emprego_renda)%>%
+  mutate(year=2018)
+idfm_2018<-idfm_2018%>%
+  select(codigo,year,munic_index_general,munic_index_renda)
+idfm_2018$codigo<-as.character(idfm_2018$codigo)
+idfm_2018$year<-as.character(idfm_2018$year)
+idfm_long<-bind_rows(idfm_long,idfm_2018)
+
+saveRDS(idfm_long, here("intermediate","municipal_index.RDS"))
+```
+
+9. Electricity Outages Data (ANEEL, 2017-2022)
+```{r}
+#Load the linking table
+municipalities<-fread(here("raw","indqual-municipio.csv"), encoding="Latin-1")%>%
+  select(2,3)
+
+#Restrict analysis to non-programmed outages and calculate average 
+outages_2017<-fread(here("raw","interrupcoes-energia-eletrica-2017.csv"), encoding = "Latin-1")%>%
+  filter(TipoInt=="Não Programada")%>%
+  mutate(time_interruption=(DtFimInt-DtInicioInt))
+
+outages_2017<-outages_2017%>%
+  left_join(municipalities, by=c("IdeCnjUndCnm"="IdeConjUnidConsumidoras"))
+
+#consumer unit often relates to multiple municipalities,however since the municipality is fully affected I will not do fractional counts but count the outage as 1 for each municipality
+
+#Summarise number and average duration of outage by municipality ID 
+outages_2017_agg<-outages_2017%>%
+  group_by(CodMunicipio, Ano)%>%
+  summarise(unprogrammed_outages=n(), avg_time=mean(time_interruption))
+
+remove(outages_2017)
+
+outages_2018<-fread(here("raw","interrupcoes-energia-eletrica-2018.csv"), encoding = "Latin-1")%>%
+  filter(TipoInt=="Não Programada")%>%
+  mutate(time_interruption=(DtFimInt-DtInicioInt))%>%
+  left_join(municipalities, by=c("IdeCnjUndCnm"="IdeConjUnidConsumidoras"))
+
+#Summarise number and average duration of outage by area (abadia dos dorados had 1244)
+outages_2018_agg<-outages_2018%>%
+  group_by(CodMunicipio, Ano)%>%
+  summarise(unprogrammed_outages=n(), avg_time=mean(time_interruption))
+remove(outages_2018)
+
+outages_2019<-fread(here("raw","interrupcoes-energia-eletrica-2019.csv"), encoding = "Latin-1")%>%
+  filter(TipoInt=="Não Programada")%>%
+  mutate(time_interruption=(DtFimInt-DtInicioInt))%>%
+  left_join(municipalities, by=c("IdeCnjUndCnm"="IdeConjUnidConsumidoras"))
+
+#Summarise number and average duration of outage by area (abadia dos dorados had 1244)
+outages_2019_agg<-outages_2019%>%
+  group_by(CodMunicipio, Ano)%>%
+  summarise(unprogrammed_outages=n(), avg_time=mean(time_interruption))
+remove(outages_2019)
+
+outages_2020<-fread(here("raw","interrupcoes-energia-eletrica-2020.csv"), encoding = "Latin-1")%>%
+  filter(TipoInt=="Não Programada")%>%
+  mutate(time_interruption=(DtFimInt-DtInicioInt))%>%
+  left_join(municipalities, by=c("IdeCnjUndCnm"="IdeConjUnidConsumidoras"))
+
+#Summarise number and average duration of outage by area (abadia dos dorados had 1244)
+outages_2020_agg<-outages_2020%>%
+  group_by(CodMunicipio, Ano)%>%
+  summarise(unprogrammed_outages=n(), avg_time=mean(time_interruption))
+remove(outages_2020)
+
+outages_2021<-fread(here("raw","interrupcoes-energia-eletrica-2021.csv"), encoding = "Latin-1")%>%
+  filter(TipoInt=="Não Programada")%>%
+  mutate(time_interruption=(DtFimInt-DtInicioInt))%>%
+  left_join(municipalities, by=c("IdeCnjUndCnm"="IdeConjUnidConsumidoras"))
+
+#Summarise number and average duration of outage by area (abadia dos dorados had 1244)
+outages_2021_agg<-outages_2021%>%
+  group_by(CodMunicipio, Ano)%>%
+  summarise(unprogrammed_outages=n(), avg_time=mean(time_interruption))
+remove(outages_2021)
+
+outages_2022<-fread(here("raw","interrupcoes-energia-eletrica-2022.csv"), encoding = "Latin-1")%>%
+  filter(TipoInt=="Não Programada")%>%
+  mutate(time_interruption=(DtFimInt-DtInicioInt))%>%
+  left_join(municipalities, by=c("IdeCnjUndCnm"="IdeConjUnidConsumidoras"))
+
+#Summarise number and average duration of outage by area (abadia dos dorados had 1244)
+outages_2022_agg<-outages_2022%>%
+  group_by(CodMunicipio, Ano)%>%
+  summarise(unprogrammed_outages=n(), avg_time=mean(time_interruption))
+remove(outages_2022)
+
+#bind together
+Names <- ls(pattern = "^outages_")
+L <- mget(Names)
+outages_final<-bind_rows(L)
+outages_final<-outages_final%>%mutate(avg_interruption_in_hours=avg_time/3600)
+outages_final$avg_interruption_in_hours<-as.numeric(outages_final$avg_interruption_in_hours)
+outages_final<-outages_final%>%select(-avg_time)
+
+saveRDS(outages_final,here("intermediate","outages_2017_2022.RDS"))
+rm(list = ls())
+```
+
+
+
+14. geographic data
+```{r}
+municipality_names<-basedosdados::read_sql(query="SELECT DISTINCT id_municipio, nome_municipio FROM `basedosdados.br_geobr_mapas.setor_censitario_2010`")
+geobr<-basedosdados::read_sql(query="SELECT * FROM `basedosdados.br_geobr_mapas.municipio`")
+municipalities<-full_join(municipality_names,geobr, by="id_municipio")
+
+saveRDS(municipalities, here("raw","geodata_municipios.RDS"))
+```
+
+15.load firm-level of operators (Sviatlana)
+```{r}
+#load auction generation file to extract cpnj number
+auction_generation_final <-
+  readRDS(here("final", "auction_generation_final.RDS"))
+
+# extract CNPJs as a vector
+cnpjs <- auction_generation_final$NumCPFCNPJ
+
+# convert vector to a string of comma-separated values
+cnpjs_str <-
+  paste0("'", gsub("'", "\\'", cnpjs), "'", collapse = ",")
+# extract establishments from database
+estabelecimentos <-
+  basedosdados::read_sql(
+    query = paste(
+      "SELECT cnpj, cnpj_basico, identificador_matriz_filial, id_pais, data_inicio_atividade, cnae_fiscal_principal, id_municipio, data, data_inicio_atividade, situacao_cadastral, data_situacao_cadastral, motivo_situacao_cadastral
+                              FROM `basedosdados.br_me_cnpj.estabelecimentos`
+                              WHERE cnpj IN(",
+      cnpjs_str,
+      ")  AND data = '2022-12-17'"
+    )
+  )
+
+# extract CNPJs basico as a vector
+cnpj_basic <- estabelecimentos$cnpj_basico
+# convert vector to a string of comma-separated values
+cnpj_basico_str <-
+  paste0("'", gsub("'", "\\'", cnpj_basic), "'", collapse = ",")
+
+#get all establishments connected with enterprises by CNPJs basico
+estabelecimentos_all <-
+  basedosdados::read_sql(
+    query = paste(
+      "SELECT cnpj, cnpj_basico, identificador_matriz_filial, id_pais, data_inicio_atividade, cnae_fiscal_principal, id_municipio, data, data_inicio_atividade, situacao_cadastral, data_situacao_cadastral, motivo_situacao_cadastral
+                              FROM `basedosdados.br_me_cnpj.estabelecimentos`
+                              WHERE cnpj_basico IN(",
+      cnpj_basico_str,
+      ")  AND data = '2022-12-17'"
+    )
+  )
+
+
+estabelecimentos_all$Basico <- ifelse(estabelecimentos_all$cnpj_basico %in% cnpj_basic, 1, 0)
+
+#get enterprise from the database
+socios <-
+  basedosdados::read_sql(
+    query = paste(
+      "SELECT nome, cnpj_basico, tipo, id_pais
+                            FROM `basedosdados.br_me_cnpj.socios`
+                              WHERE cnpj_basico IN(",
+      cnpj_basico_str,
+      ")  AND data = '2022-12-17'"
+    )
+  )
+
+
+
+#flag to check if the company is foreign or not. 105 - code of brasil from siscomex_country_code
+socios <- socios %>% mutate(notBrasil = NA)
+
+for (i in 1:nrow(socios)) {
+  if (is.na(socios$id_pais[i]) || socios$id_pais[i] == 105) {
+    socios$notBrasil[i] = FALSE
+  }
+  else
+    socios$notBrasil[i] = TRUE
+}
+
+
+#reduce the owner data to whether company is partially foreign-owned or not
+socios <- socios %>%
+  group_by(cnpj_basico) %>%
+  mutate(foreign = any(notBrasil == TRUE)) %>%
+  ungroup()
+
+socios_final<-socios%>%distinct(cnpj_basico, foreign)
+
+# left join establishment and company data by cnpj_basico
+estabelecimentos_all1 <-
+  estabelecimentos_all %>% left_join(socios_final, by = c("cnpj_basico" = "cnpj_basico"))
+
+#determine if the establishment is our operator
+estabelecimentos_all1 <- estabelecimentos_all1 %>% mutate(operator = NA)
+
+estabelecimentos_all1$operator <-
+  ifelse(estabelecimentos_all1$cnpj %in% estabelecimentos$cnpj, 1, 0)
+
+#keep only operators and mother companies
+estabelecimentos_all2<-estabelecimentos_all1%>%filter(identificador_matriz_filial==1 | operator==1)%>%
+  select(cnpj,cnpj_basico,identificador_matriz_filial,cnae_fiscal_principal,id_municipio,foreign,operator)
+
+#make it wide format (1 row=1 company)
+mother_companies<-estabelecimentos_all2%>%filter(identificador_matriz_filial==1)%>%
+  select(cnpj_basico,cnae_fiscal_principal,id_municipio)%>%
+  rename(cnae_mother_company=cnae_fiscal_principal, mun_id_mother=id_municipio)
+
+#reduce to 1 row per company, keeping only foreign plus CNAE and municipality of operator and of mother company
+estabelecimentos_final <-
+  estabelecimentos_all1 %>%filter(operator==1)%>%select(cnpj, cnpj_basico, id_municipio, cnae_fiscal_principal, foreign, identificador_matriz_filial) %>%
+  left_join(mother_companies, by=c("cnpj_basico"))
+
+saveRDS(estabelecimentos_final,
+        here("intermediate", "estabelecimentos.RDS"))
+
+```
+
+16. load firm-level info of wind manufacturer
+```{r}
+wind_manufacturer<-read_excel(here("raw", "CNPJs.xlsx"), sheet = "wind")
+
+#remove companies, which are not wind manufactures from the dataset
+wind_manufacturer <- subset(wind_manufacturer, !is.na(wind_manufacturer[, 5]) | !is.na(wind_manufacturer[, 6]) | !is.na(wind_manufacturer[, 7])) 
+wind_manufacturer <- wind_manufacturer%>%select(1:7)
+
+# filter NA CNPJs
+wind_manufacturer <- wind_manufacturer %>% 
+  filter(!is.na(CNPJ))
+
+#Bring CNPJs to the correct format to use it for the SQL query
+wind_manufacturer <- wind_manufacturer %>%
+  mutate(CNPJ = gsub("[\\./\\-]","", `CNPJ format`))
+
+
+# extract CNPJs as a vector
+cnpjs_wind <- wind_manufacturer$CNPJ
+# convert vector to a string of comma-separated values
+cnpjs_str_wind <-paste0("'", gsub("'", "\\'", cnpjs_wind), "'", collapse = ",")
+
+# extract establishments_wind from database
+estabelecimentos_wind <-basedosdados::read_sql( query = paste(
+      "SELECT cnpj, cnpj_basico, identificador_matriz_filial, id_pais, data_inicio_atividade, cnae_fiscal_principal, id_municipio, data, situacao_cadastral, data_situacao_cadastral, motivo_situacao_cadastral, nome_fantasia
+      FROM `basedosdados.br_me_cnpj.estabelecimentos`
+      WHERE cnpj IN(",cnpjs_str_wind, ")  AND data = '2022-12-17'"
+    )
+  )
+
+# extract CNPJs basico as a vector
+cnpj_basic_wind <- estabelecimentos_wind$cnpj_basico
+# convert vector to a string of comma-separated values
+cnpj_basico_str_wind <-paste0("'", gsub("'", "\\'", cnpj_basic_wind), "'", collapse = ",")
+
+#get all establishments connected with enterprises by CNPJs basico
+estabelecimentos_all_wind <-
+  basedosdados::read_sql(
+    query = paste(
+      "SELECT cnpj, cnpj_basico, identificador_matriz_filial, id_pais, data_inicio_atividade, cnae_fiscal_principal, id_municipio, data, situacao_cadastral, data_situacao_cadastral, motivo_situacao_cadastral, nome_fantasia
+                              FROM `basedosdados.br_me_cnpj.estabelecimentos`
+                              WHERE cnpj_basico IN(", cnpj_basico_str_wind, ")  AND data = '2022-12-17'"
+    )
+  )
+
+
+#get enterprise from the database
+socios_wind <-
+  basedosdados::read_sql(
+    query = paste(
+      "SELECT nome, cnpj_basico, tipo, id_pais
+                            FROM `basedosdados.br_me_cnpj.socios`
+                              WHERE cnpj_basico IN(",
+      cnpj_basico_str_wind,
+      ")  AND data = '2022-12-17'"
+    )
+  )
+
+
+
+#flag to check if the company is foreign or not. 105 - code of brasil from siscomex_country_code
+socios_wind <- socios_wind %>% mutate(notBrasil = NA)
+
+for (i in 1:nrow(socios_wind)) {
+  if (is.na(socios_wind$id_pais[i]) || socios_wind$id_pais[i] == 105) {
+    socios_wind$notBrasil[i] = FALSE
+  }
+  else
+    socios_wind$notBrasil[i] = TRUE
+}
+
+
+#reduce the owner data to whether company is partially foreign-owned or not
+socios_wind <- socios_wind %>%
+  group_by(cnpj_basico) %>%
+  mutate(foreign = any(notBrasil == TRUE)) %>%
+  ungroup()
+
+socios_final_wind<-socios_wind%>%distinct(cnpj_basico, foreign)
+
+# left join establishment and company data by cnpj_basico
+estabelecimentos_final_wind <-
+  estabelecimentos_all_wind %>% left_join(socios_final_wind, by = c("cnpj_basico" = "cnpj_basico"))
+
+estabelecimentos_final_wind <- estabelecimentos_final_wind %>% 
+  rename(
+    activity_start = data_inicio_atividade,
+    registration_status = situacao_cadastral, 
+    end_date = data_situacao_cadastral
+    )
+
+estabelecimentos_final_wind <- subset(estabelecimentos_final_wind, estabelecimentos_final_wind$registration_status != 1)
+
+for (i in 1:nrow(estabelecimentos_final_wind)) {
+  if(estabelecimentos_final_wind$registration_status[i] == 2){
+    estabelecimentos_final_wind$end_date[i]<- NA
+  }
+ } 
+
+
+
+estabelecimentos_final_wind <- estabelecimentos_final_wind %>%
+  mutate(start_year = year(activity_start),
+         start_month = month(activity_start)) %>%
+  mutate(end_year = year(end_date),
+         end_month = month(end_date))
+
+saveRDS(estabelecimentos_final_wind,
+        here("intermediate", "estabelecimentos_wind.RDS"))
+
+
+estabelecimentos_matriz_cnae_d<- estabelecimentos_final_wind %>% filter(identificador_matriz_filial == 1) %>% distinct(cnae_fiscal_principal)
+
+estabelecimentos_final_wind$manufacturer <- ifelse(estabelecimentos_final_wind$cnpj %in% cnpjs_wind, TRUE, FALSE)
+
+
+```
+
+17. load firm-level info of solar manufacturer 
+```{r}
+solar_manufacturer<-read_excel(here("raw", "CNPJs.xlsx"), sheet ="solar")
+solar_manufacturer <- solar_manufacturer%>%select(1:10)
+
+
+#Bring CNPJs to the correct format to use it for the SQL query
+solar_manufacturer <- solar_manufacturer %>%
+  mutate(CNPJ = gsub("[\\./\\-]","", `CNPJ format`))
+
+solar_manufacturer <- solar_manufacturer %>% 
+  filter(!is.na(CNPJ))
+
+# extract CNPJs as a vector
+cnpjs_solar <- solar_manufacturer$CNPJ
+
+# convert vector to a string of comma-separated values
+cnpjs_str_solar <-
+  paste0("'", gsub("'", "\\'", cnpjs_solar), "'", collapse = ",")
+
+
+#extracting data for the solar manufacturers
+
+# extract establishments_solar from database
+estabelecimentos_solar <-
+  basedosdados::read_sql(
+    query = paste(
+      "SELECT cnpj, cnpj_basico, identificador_matriz_filial, id_pais, data_inicio_atividade, cnae_fiscal_principal, id_municipio, data, situacao_cadastral, data_situacao_cadastral, motivo_situacao_cadastral, nome_fantasia
+                              FROM `basedosdados.br_me_cnpj.estabelecimentos`
+                              WHERE cnpj IN(",
+      cnpjs_str_solar,
+      ")  AND data = '2022-12-17'"
+    )
+  )
+
+# extract CNPJs basico as a vector
+cnpj_basico_solar <- estabelecimentos_solar$cnpj_basico
+
+# convert vector to a string of comma-separated values
+cnpj_basico_str_solar <-
+  paste0("'", gsub("'", "\\'", cnpj_basico_solar), "'", collapse = ",")
+
+#get all establishments connected with enterprises by CNPJs basico
+estabelecimentos_all_solar <-
+  basedosdados::read_sql(
+    query = paste(
+      "SELECT cnpj, cnpj_basico, identificador_matriz_filial, id_pais, data_inicio_atividade, cnae_fiscal_principal, id_municipio, data, situacao_cadastral, data_situacao_cadastral, motivo_situacao_cadastral, nome_fantasia
+                              FROM `basedosdados.br_me_cnpj.estabelecimentos`
+                              WHERE cnpj_basico IN(",
+      cnpj_basico_str_solar,
+      ")  AND data = '2022-12-17'"
+    )
+  )
+
+
+#get enterprise from the database
+socios_solar <-
+  basedosdados::read_sql(
+    query = paste(
+      "SELECT nome, cnpj_basico, tipo, id_pais
+                            FROM `basedosdados.br_me_cnpj.socios`
+                              WHERE cnpj_basico IN(",
+      cnpj_basico_str_solar,
+      ")  AND data = '2022-12-17'"
+    )
+  )
+
+
+
+#flag to check if the company is foreign or not. 105 - code of brasil from siscomex_country_code
+socios_solar <- socios_solar %>% mutate(notBrasil = NA)
+
+for (i in 1:nrow(socios_solar)) {
+  if (is.na(socios_solar$id_pais[i]) || socios_solar$id_pais[i] == 105) {
+    socios_solar$notBrasil[i] = FALSE
+  }
+  else
+    socios_solar$notBrasil[i] = TRUE
+}
+
+
+#reduce the owner data to whether company is partially foreign-owned or not
+socios_solar <- socios_solar %>%
+  group_by(cnpj_basico) %>%
+  mutate(foreign = any(notBrasil == TRUE)) %>%
+  ungroup()
+
+socios_final_solar<-socios_solar%>%distinct(cnpj_basico, foreign)
+
+# left join establishment and company data by cnpj_basico
+estabelecimentos_all_solar <-
+  estabelecimentos_all_solar %>% left_join(socios_final_solar, by = c("cnpj_basico" = "cnpj_basico"))
+
+
+estabelecimentos_final_solar <- estabelecimentos_all_solar %>% 
+  rename(
+    activity_start = data_inicio_atividade,
+    registration_status = situacao_cadastral, 
+    end_date = data_situacao_cadastral
+    )
+
+estabelecimentos_final_solar <- subset(estabelecimentos_final_solar, estabelecimentos_final_solar$registration_status != 1)
+
+for (i in 1:nrow(estabelecimentos_final_solar)) {
+  if(estabelecimentos_final_solar$registration_status[i] == 2){
+    estabelecimentos_final_solar$end_date[i]<- NA
+  }
+ } 
+
+
+estabelecimentos_final_solar <- estabelecimentos_final_solar %>%
+  mutate(start_year = year(activity_start),
+         start_month = month(activity_start)) %>%
+  mutate(end_year = year(end_date),
+         end_month = month(end_date))
+
+
+# check if establishment is in the initial manufacturer list
+estabelecimentos_final_solar$manufacturer <- ifelse(estabelecimentos_final_solar$cnpj %in% cnpjs_solar, TRUE, FALSE)
+
+estabelecimentos_matriz_cnae_distinct<- estabelecimentos_final_solar %>% filter(identificador_matriz_filial == 1) %>% distinct(cnae_fiscal_principal)
+
+saveRDS(estabelecimentos_final_solar,
+        here("intermediate", "estabelecimentos_solar.RDS"))
+
+```
+
+18. IPCA deflator
+```{r}
+ipca<-read_sql("SELECT ano, mes, indice, variacao_anual, variacao_doze_meses FROM `basedosdados.br_ibge_ipca.mes_brasil`")
+ipca<-ipca%>%arrange(ano,mes)
+ipca<-ipca%>%filter(mes==12)%>%select(1:3)%>%mutate(deflator93=indice/100)%>%select(1,4)
+ipca<-ipca%>%mutate(deflator=deflator93[ano==2020]/deflator93)
+ipca<-ipca%>%select(ano,deflator)
+saveRDS(ipca, here("raw","ipca_deflator.RDS"))
+
+#create monthly deflator
+ipca_monthly<-read_sql("SELECT ano, mes, indice, variacao_anual, variacao_doze_meses FROM `basedosdados.br_ibge_ipca.mes_brasil`")
+ipca_monthly<-ipca_monthly%>%arrange(ano,mes)
+ipca_monthly<-ipca_monthly%>%mutate(deflator93=indice/100)%>%
+  mutate(deflator122020=deflator93[ano==2020 & mes==12]/deflator93)
+ipca_monthly<-ipca_monthly%>%select(ano,mes,deflator122020)
+ipca_monthly <- type.convert(ipca_monthly, as.is = TRUE) 
+saveRDS(ipca_monthly, here("raw","ipca_deflator_monthly.RDS"))
+```
+
+19. Create registry of newly created firms (all firms 581 Mio. rows! so need to restrict)
+```{r}
+all_firms<-basedosdados::read_sql(query="SELECT EXTRACT(year FROM data_inicio_atividade) AS year,
+      EXTRACT(month FROM data_inicio_atividade) AS month,
+      id_municipio,cnae_fiscal_principal, 
+      COUNT(*) AS establishments_founded, 
+      COUNT(CASE WHEN identificador_matriz_filial = '1' THEN 1 END) AS mother_companies_founded,
+      COUNT(CASE WHEN id_pais IS NOT NULL AND id_pais !='105' THEN 1 END) AS foreign_owned_establishment
+FROM basedosdados.br_me_cnpj.estabelecimentos
+WHERE data_inicio_atividade >= '2005-01-01' and data ='2022-11-24'
+GROUP BY year, month, id_municipio, cnae_fiscal_principal")
+
+saveRDS(all_firms, here("raw","cnpj_cnae_month_year_2005_2022.RDS"))
+
+all_firms<-all_firms%>%arrange(id_municipio, year,month)
+month_year<-all_firms%>%distinct(month,year)
+```
+
+20. load receipts data for solar/wind municipalities with large treatment effects
+```{r}
+#Load Data
+solar_mun <- readRDS(here("raw", "solar_mun.RDS"))
+wind_mun <- readRDS(here("raw", "wind_mun.RDS"))
+categories <- read_excel(here("raw", "categories.xlsx"))
+
+# extract municipalities as a vector to use in SQL query 
+solar_mun_id <- solar_mun$id_municipio
+
+# extract municipalities as a vector
+wind_mun_id <- wind_mun$id_municipio
+
+# convert vector to a string of comma-separated values
+solar_mun_id_str <-
+  paste0("'", gsub("'", "\\'", solar_mun_id), "'", collapse = ",")
+
+wind_mun_id_str <-
+  paste0("'", gsub("'", "\\'", wind_mun_id), "'", collapse = ",")
+
+#Step 1 get raw data for the municipios and years indicated in solar_muns.RDS and wind_muns.RDS
+ #siconfi_receipts<-basedosdados::read_sql(query=
+# "SELECT ano, id_municipio, portaria, conta, id_conta_bd, conta_bd, valor
+ #FROM `basedosdados.br_me_siconfi.municipio_receitas_orcamentarias` WHERE id_municipio IN(", solar_mun_id_str ,") AND ano BETWEEN 2000 AND 2020")
+
+#Step 1 get raw data for the municipios and years indicated in solar_muns.RDS and wind_muns.RDS
+query_wind <- paste("SELECT ano, id_municipio, portaria, conta, id_conta_bd, conta_bd, valor FROM `basedosdados.br_me_siconfi.municipio_receitas_orcamentarias` WHERE id_municipio IN(", wind_mun_id_str ,") AND ano BETWEEN 2000 AND 2020")
+siconfi_receipts_w <- basedosdados::read_sql(query_wind)
+
+query_solar <- paste0("SELECT ano, id_municipio, portaria, conta, id_conta_bd, conta_bd, valor FROM `basedosdados.br_me_siconfi.municipio_receitas_orcamentarias` WHERE id_municipio IN(", solar_mun_id_str ,") AND ano BETWEEN 2000 AND 2020")
+siconfi_receipts_s <- basedosdados::read_sql(query_solar)
+
+saveRDS(siconfi_receipts_w,here("raw","receipts_wind.RDS"))
+saveRDS(siconfi_receipts_s,here("raw","receipts_solar.RDS"))
+
+```

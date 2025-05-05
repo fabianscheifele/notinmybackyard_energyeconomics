@@ -1,0 +1,1214 @@
+---
+title: "TWFE Estimation"
+author: "Fabian Scheifele"
+date: "2023-05-17"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r }
+if(!require(install.load)){
+  install.packages("install.load")
+  library(install.load)
+}
+suppressMessages(install_load("tidyverse", "dplyr", "ggplot2", "readr", "readxl","here","bacondecomp", "fixest", "plm","geobr","sf","ggdist","ggspatial", "ggsn","extrafont","modelsummary"))
+
+
+theme_set(theme_minimal(base_family = "Times New Roman"))
+```
+
+load data
+```{r pressure, echo=FALSE}
+wind_matched_final_monthly<-readRDS(here("final","wind1to1_final_monthly.RDS"))
+solar_matched_final_monthly<-readRDS(here("final","solar1to1_final_monthly.RDS"))
+wind_matched_final_annual<-readRDS(here("final","wind1to1_final_annual.RDS"))
+solar_matched_final_annual<-readRDS(here("final","solar1to1_final_annual.RDS"))
+
+#dummy if any installation happened within 50k within 24 month of treatment and create joint sector jobs and non-sector jobs
+solar_matched_final_monthly<-solar_matched_final_monthly%>%arrange(id_municipio, ano, month)%>%
+  group_by(id_municipio)%>%
+  mutate(solar_spill=if_else(any(solar_othersolar_within50k>5 & t_solar>=-12 & t_solar<=24),1,0))%>%
+  mutate(other_spill=if_else(any(solar_otherpower_within50k>5 & t_solar>=-12 & t_solar<=24),1,0))%>%
+  mutate(solar_jobs_endmonth=solar_inst_endmonth+solar_comp_endmonth+solar_om_endmonth)%>%
+  mutate(solar_other_jobs_endmonth=total_endmonth-solar_jobs_endmonth)
+
+
+wind_matched_final_monthly<-wind_matched_final_monthly%>%arrange(id_municipio, ano, month)%>%
+  group_by(id_municipio)%>%
+  mutate(wind_spill=if_else(any(wind_otherwind_within50k>5 & t_wind>=-12 & t_wind<=24),1,0))%>%
+  mutate(other_spill=if_else(any(wind_otherpower_within50k>5 & t_wind>=-12 & t_wind<=24),1,0))%>%
+  mutate(wind_jobs_endmonth=wind_inst_endmonth+wind_comp_endmonth+wind_om_endmonth)%>%
+  mutate(wind_other_jobs_endmonth=total_endmonth-wind_jobs_endmonth)
+
+
+#create post dummy for bacon decomposition
+wind_matched_final_monthly<-wind_matched_final_monthly%>%
+  group_by(id_municipio)%>%
+  mutate(wind_post=ifelse(t_wind>=0 & wind_treat_postmatch==1,1,0))
+
+solar_matched_final_monthly<-solar_matched_final_monthly%>%
+  group_by(id_municipio)%>%
+  mutate(solar_post=ifelse(t_solar>=0 & solar_treat_postmatch==1,1,0))
+ 
+solar_vars <- c("d_solar_pre[0-9]", "d_solar_post[0-9]", "new_mw_solar")
+   
+  wind_vars <- c("d_wind_pre[0-9]", "d_wind_post[0-9]", "new_mw_wind")
+
+#how many follow up investments do muncipalities have after t0
+avg_no_treats_wind<-wind_matched_final_monthly%>%filter(new_mw_wind>5 & t_wind>=0 & t_wind<6)%>%distinct(id_municipio, t_wind, new_mw_wind)%>%
+  group_by(id_municipio)%>%
+  summarise(n=n())
+avg_wind<-mean(avg_no_treats_wind$n)
+
+
+avg_no_treats_solar<-solar_matched_final_monthly%>%filter(new_mw_solar>5 & t_solar>=0 & t_solar<6)%>%distinct(id_municipio, t_solar, new_mw_solar)%>%
+  group_by(id_municipio)%>%
+  summarise(n=n())
+avg_solar<-mean(avg_no_treats_solar$n) 
+
+
+   
+wind_desc<-wind_matched_final_monthly %>%
+  filter(new_mw_wind > 5 & t_wind >= 0) %>%
+  distinct(id_municipio, t_wind, new_mw_wind) %>%
+  group_by(t_wind) %>%
+  summarise(n = n(), avg_size = mean(new_mw_wind)) %>%
+  filter(t_wind < 7) %>%
+  ggplot(aes(x = t_wind)) +
+  geom_line(aes(y = avg_size, color = "Avg. MW installed")) +  # Assign color aesthetic
+  geom_point(aes(y = avg_size, color = "Avg. MW installed")) +
+  geom_bar(aes(y = n, fill = "No. of municipalities"), stat = "identity", alpha = 0.7) +  # Assign fill aesthetic
+  scale_y_continuous(limits=c(0,90), breaks = seq(0, 90, 10)) +
+  scale_x_continuous(breaks = seq(0, 6, 1)) +
+  theme_bw() +
+  geom_text(aes(y = n, label = n), vjust = -0.5) +
+  geom_text(aes(y = avg_size, label = round(avg_size,1)), vjust = -0.5) +
+  geom_text(aes(y=85,x=4.5),label = paste("Months with new capacity in first 6 months:", round(avg_wind,2)))+
+  labs(x = "Months after first installation", y = "") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(name = "", values = "grey50", labels = "No. of municipalities") +  # Customize bar legend
+  scale_color_manual(name = "", values = "black", labels = "Avg. MW installed")    
+ggsave(wind_desc, filename=here("output","regressions","TWFE 1-to-1 binning","final figures", "appendix","wind_mw_n.png"), width=2000, height=1000, units="px")
+
+solar_desc<-solar_matched_final_monthly %>%
+  filter(new_mw_solar > 5 & t_solar >= 0) %>%
+  distinct(id_municipio, t_solar, new_mw_solar) %>%
+  group_by(t_solar) %>%
+  summarise(n = n(), avg_size = mean(new_mw_solar)) %>%
+  filter(t_solar < 7) %>%
+  ggplot(aes(x = t_solar)) +
+  geom_line(aes(y = avg_size, color = "Avg. MW installed")) +  # Assign color aesthetic
+  geom_point(aes(y = avg_size, color = "Avg. MW installed")) +
+  geom_bar(aes(y = n, fill = "No. of municipalities"), stat = "identity", alpha = 0.7) +  # Assign fill aesthetic
+  scale_y_continuous(limits=c(0,100),breaks = seq(0, 100, 10)) +
+  scale_x_continuous(breaks = seq(0, 6, 1)) +
+  theme_bw() +
+  geom_text(aes(y = n, label = n), vjust = -0.5) +
+  geom_text(aes(y = avg_size, label = round(avg_size,1)), vjust = -0.5) +
+  geom_text(aes(y=30,x=3),label = paste("Months with new capacity in first 6 months:", round(avg_solar,2)))+
+  labs(x = "Months after first installation", y = "") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(name = "", values = "grey50", labels = "No. of municipalities") +  # Customize bar legend
+  scale_color_manual(name = "", values = "black", labels = "Avg. MW installed")    
+ggsave(solar_desc, filename=here("output","regressions","TWFE 1-to-1 binning","final figures", "appendix","solar_mw_n.png"), width=2000, height=1000, units="px")
+
+
+#Table with sectors.
+library(xtable)
+cnae_wind<-read_excel(here("raw","wind_solar_cnae.xlsx"), sheet = "wind_related cnae")%>%select(1,4,5)%>%arrange(phase, cnae)
+cnae_wind<-xtable(cnae_wind, type="latex", digits = 0)
+print(cnae_wind, include.rownames = FALSE,  file=here("output","regressions","TWFE 1-to-1 binning","final figures", "appendix","wind_cnae.tex"))
+
+cnae_solar<-read_excel(here("raw","wind_solar_cnae.xlsx"), sheet = "solar_related_CNAE_")%>%select(1,4,5)%>%arrange(phase, cnae)
+cnae_solar<-xtable(cnae_solar, type="latex", digits = 0)
+print(cnae_solar, include.rownames = FALSE,  file=here("output","regressions","TWFE 1-to-1 binning","final figures", "appendix","solar_cnae.tex"))
+
+median(solar_matched_final_monthly$total_endmonth[solar_matched_final_monthly$ano==2022 &solar_matched_final_monthly$solar_treat_postmatch==1 ], na.rm = TRUE)
+pib<-solar_matched_final_annual%>%select(id_municipio, ano, pib_clean_constant2020_BRL, va_industria_constant2020_BRL)
+median(solar_matched_final_monthly$populacao[solar_matched_final_monthly$ano==2021 &solar_matched_final_monthly$solar_treat_postmatch==1 ], na.rm = TRUE)
+
+
+#MW by year in sample
+solar_graph<-solar_matched_final_annual%>%filter(new_mw_solar>0)%>%
+  ungroup()%>%group_by(ano)%>%
+  summarize(mw_solar=sum(new_mw_solar), no_municipalities=n_distinct(id_municipio))
+
+solar_sample<-ggplot(solar_graph, aes(x = ano)) +
+  geom_bar(aes(y = mw_solar), stat = "identity", fill = "skyblue") +
+  geom_line(aes(y = no_municipalities * 100), color = "red", size = 1) + 
+  scale_y_continuous(
+    name = "MW installed per year",
+    sec.axis = sec_axis(~ . / 100, name = "No. of Municipalities",breaks = seq(0,12,1))
+  ) +
+  labs(x = "Year", title = "a. Solar") +
+  theme_bw()+scale_x_continuous(breaks = seq(2016,2022,1))
+
+
+wind_graph<-wind_matched_final_annual%>%filter(new_mw_wind>0)%>%
+  ungroup()%>%group_by(ano)%>%
+  summarize(mw_wind=sum(new_mw_wind), no_municipalities=n_distinct(id_municipio))
+
+wind_sample<-ggplot(wind_graph, aes(x = ano)) +
+  geom_bar(aes(y = mw_wind), stat = "identity", fill = "skyblue") +
+  geom_line(aes(y = no_municipalities * 100), color = "red", size = 1) + 
+  scale_y_continuous(
+    name = "MW installed per year",
+    sec.axis = sec_axis(~ . / 100, name = "No. of Municipalities",breaks = seq(0,30,5))
+  ) +
+  labs(x = "Year", title = "b. Wind") +
+  theme_bw()+scale_x_continuous(breaks = seq(2007,2022,2))
+
+library(patchwork)
+descriptive<-solar_sample+wind_sample
+ggsave(descriptive, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix","no_mw_per_year.png"),units="px", width = 3000, height=2000)
+
+```
+
+
+Classic TWFE using fixed
+```{r}
+monthly_coefplot_solar <- function(dv, df_origin, t_start, t_max, graph_title) {
+  formula_string <- paste(dv, "~ d_solar_pre37_bin+ d_solar_pre.[", t_start, ":1]+ new_mw_solar + d_solar_post.[1:", t_max, "] +d_solar_post25_bin| id_municipio + month^ano")
+  form <- as.formula(formula_string)
+  
+  fe <- feols(form, df_origin, cluster = "id_municipio")
+  
+solar_vars <- c("d_solar_pre[0-9]", "d_solar_post[0-9]", "new_mw_solar")
+   
+wind_vars <- c("d_wind_pre[0-9]", "d_wind_post[0-9]", "new_mw_wind")
+
+  coef <- coef(fe)[grepl(paste0("^(", paste(solar_vars, collapse = "|"), ")"), names(coef(fe)))]
+  se <- se(fe)[grepl(paste0("^(", paste(solar_vars, collapse = "|"), ")"), names(coef(fe)))]
+  df <- data.frame(coef, se) 
+  df<-df%>% mutate(x.axis = c(-37,seq(-35,25,1)))
+    #add the zero coefficient for -37 (comparison time unit)
+  add_row <- data.frame(coef = 0, se = 0, x.axis = -36)
+  df <- rbind(df, add_row)
+  
+  plots <- ggplot(df, aes(x = x.axis, y = coef)) +
+    geom_ribbon(aes(ymin = coef - 1.96 * se, ymax = coef + 1.96 * se), fill = "gray70") +
+    geom_line() +
+    ggtitle(graph_title) +
+    labs(x = "Months before/after commissioning", y = "") +
+    theme_bw() +
+    theme(text = element_text(size = 7)) +
+    scale_x_continuous(expand = c(0.01, 0.01),
+    breaks = c(-37, seq(-32, 20, by = 4), 25),  # Set breaks including custom points
+    labels = c("-37+", paste(seq(-32, 20, by = 4)), "25+")   # Set labels accordingly
+  ) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = 0, linetype = "dashed")
+
+  ggsave(filename = here("output", "regressions", "TWFE 1-to-1 binning", "solar", paste0(dv, ".png")), 
+         plot = plots, 
+         units = "px", width = 2000, height = 1000)
+  return(list(plot = plots, table = df, regression_model=fe))
+  }
+
+
+A<-monthly_coefplot_solar("solar_inst_endmonth", solar_matched_final_monthly,35,24,"a. Installation")
+B<-monthly_coefplot_solar("solar_om_endmonth", solar_matched_final_monthly, 35,24,"b. O&M")
+C<-monthly_coefplot_solar("solar_comp_endmonth", solar_matched_final_monthly, 35,24,"c. Components")
+D<-monthly_coefplot_solar("solar_other_jobs_endmonth", solar_matched_final_monthly, 35,24,"d. Non-solar sectors")
+E<-monthly_coefplot_solar("avg_wage_2020BRL", solar_matched_final_monthly, 35,24,"Wages")
+G<-monthly_coefplot_solar("solar_wage_2020BRL", solar_matched_final_monthly, 35,24,"a. Solar: Wages")
+solar_firms<-monthly_coefplot_solar("no_establishments_solar", solar_matched_final_monthly, 35,24,"a. Solar: Sector firms")
+H<-monthly_coefplot_solar("tertiary_endmonth", solar_matched_final_monthly, 35,24,"c. Tertiary-educated")
+I<-monthly_coefplot_solar("secondary_endmonth", solar_matched_final_monthly, 35,24,"b. Secondary-educated")
+J<-monthly_coefplot_solar("primary_endmonth", solar_matched_final_monthly, 35,24,"a. Primary-educated")
+monthly_coefplot_solar("solar_jobs_endmonth", solar_matched_final_monthly, 35,24,"Solar Jobs")
+monthly_coefplot_solar("avg_skill_solar", solar_matched_final_monthly, 35,24,"a. Solar: Skill level")
+solar_outside_a<-monthly_coefplot_solar("solar_jobs_outside_endmonth", solar_matched_final_monthly, 35,24,"a. Solar: Sector-specific")
+solar_outside_b<-monthly_coefplot_solar("jobs_outside_endmonth", solar_matched_final_monthly, 35,24,"b.Solar: Total")
+H_2<-monthly_coefplot_solar("solar_tertiary_endmonth", solar_matched_final_monthly, 35,24,"a. Tertiary-educated")
+I_2<-monthly_coefplot_solar("solar_secondary_endmonth", solar_matched_final_monthly, 35,24,"b. Secondary-educated")
+J_2<-monthly_coefplot_solar("solar_primary_endmonth", solar_matched_final_monthly, 35,24,"c. Primary-educated")
+solar_total_firms<-monthly_coefplot_solar("no_establishments_cnpj", solar_matched_final_monthly, 35,24,"b. Solar: Total firms")
+solar_total_jobs<-monthly_coefplot_solar("total_endmonth", solar_matched_final_monthly, 35,24,"Solar: Total jobs")
+
+library(patchwork)
+solar2x2<- A$plot + B$plot + C$plot + D$plot
+ggsave(solar2x2, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main","solar2x2.png"),units="px", width = 2000, height=1000)
+
+avg_control_solar<-solar_matched_final_monthly%>%filter(t_solar==-6)%>%group_by(solar_treat_postmatch)%>%summarise(mean_inst=mean(solar_inst_endmonth,na.rm=TRUE), mean_nonsolar=mean(solar_other_jobs_endmonth,na.rm=TRUE))
+
+solar3x1edu_2<-H_2$plot+I_2$plot+J_2$plot
+ggsave(solar3x1edu_2, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main","3x1edu_solar_specific.png"),units="px", width = 3000, height=1000)
+
+
+wind_inst <- feols(wind_inst_endmonth ~ d_wind_pre37_bin+ d_wind_pre.[35:1]  +new_mw_wind+ d_wind_post.[1:24]+d_wind_post25_bin |id_municipio + month^ano, wind_matched_final_monthly, cluster = "id_municipio")
+summary(wind_inst)
+
+mean(solar_matched_final_monthly$solar_inst_endmonth[solar_matched_final_monthly$t_solar==-6 & solar_matched_final_monthly$solar_treat_postmatch==0], na.rm=TRUE)
+
+library(modelsummary)
+# Create regression table output
+solar_coef_labels <- c(
+  "d_solar_pre37_bin" = "t<=-37",
+  "d_solar_pre36" = "t=-36",
+  "d_solar_pre35" = "t=-35",
+  "d_solar_pre34" = "t=-34",
+  "d_solar_pre33" = "t=-33",
+  "d_solar_pre32" = "t=-32",
+  "d_solar_pre31" = "t=-31",
+  "d_solar_pre30" = "t=-30",
+  "d_solar_pre29" = "t=-29",
+  "d_solar_pre28" = "t=-28",
+  "d_solar_pre27" = "t=-27",
+  "d_solar_pre26" = "t=-26",
+  "d_solar_pre25" = "t=-25",
+  "d_solar_pre24" = "t=-24",
+  "d_solar_pre23" = "t=-23",
+  "d_solar_pre22" = "t=-22",
+  "d_solar_pre21" = "t=-21",
+  "d_solar_pre20" = "t=-20",
+  "d_solar_pre19" = "t=-19",
+  "d_solar_pre18" = "t=-18",
+  "d_solar_pre17" = "t=-17",
+  "d_solar_pre16" = "t=-16",
+  "d_solar_pre15" = "t=-15",
+  "d_solar_pre14" = "t=-14",
+  "d_solar_pre13" = "t=-13",
+  "d_solar_pre12" = "t=-12",
+  "d_solar_pre11" = "t=-11",
+  "d_solar_pre10" = "t=-10",
+  "d_solar_pre9" = "t=-9",
+  "d_solar_pre8" = "t=-8",
+  "d_solar_pre7" = "t=-7",
+  "d_solar_pre6" = "t=-6",
+  "d_solar_pre5" = "t=-5",
+  "d_solar_pre4" = "t=-4",
+  "d_solar_pre3" = "t=-3",
+  "d_solar_pre2" = "t=-2",
+  "d_solar_pre1" = "t=-1",
+  "new_mw_solar" = "t=0",
+  "d_solar_post1" = "t=1",
+  "d_solar_post2" = "t=2",
+  "d_solar_post3" = "t=3",
+  "d_solar_post4" = "t=4",
+  "d_solar_post5" = "t=5",
+  "d_solar_post6" = "t=6",
+  "d_solar_post7" = "t=7",
+  "d_solar_post8" = "t=8",
+  "d_solar_post9" = "t=9",
+  "d_solar_post10" = "t=10",
+  "d_solar_post11" = "t=11",
+  "d_solar_post12" = "t=12",
+  "d_solar_post13" = "t=13",
+  "d_solar_post14" = "t=14",
+  "d_solar_post15" = "t=15",
+  "d_solar_post16" = "t=16",
+  "d_solar_post17" = "t=17",
+  "d_solar_post18" = "t=18",
+  "d_solar_post19" = "t=19",
+  "d_solar_post20" = "t=20",
+  "d_solar_post21" = "t=21",
+  "d_solar_post22" = "t=22",
+  "d_solar_post23" = "t=23",
+  "d_solar_post24" = "t=24",
+  "d_solar_post25" = "t=25",
+  "d_solar_post25_bin" = "t>=25"
+)
+
+models_list_solar <- list("Installation"=A$regression_model, "O&M"=B$regression_model, "Components"= C$regression_model,"Non-sector jobs"=D$regression_model,"Avg. Wages"=E$regression_model,"Avg. Sector Wage"= G$regression_model, "primary"=H_2$regression_model, "secondary"=I_2$regression_model, "tertiary"=J_2$regression_model)
+rows<-tribble(~name,   ~name,    ~name, ~name, ~name,  ~name,    ~name, ~name, ~name, ~name, "Municipality FE", "YES", "YES", "YES", "YES","YES", "YES", "YES", "YES","YES",
+        "Month-Year FE", "YES", "YES", "YES", "YES","YES", "YES", "YES", "YES", "YES")
+modelsummary(models_list_solar,
+             output = here("output", "regressions", "TWFE 1-to-1 binning", "final figures", "appendix", "solar_reg_monthly.tex"),
+             fmt = 2,  # Format the numbers to 2 decimal places
+             stars =  c('*' = .1, '**' = .05, '***' = .01),  # Add stars for statistical significance, 
+             gof_map = c("nobs", "r.squared"), # Optional: omit goodness-of-fit stats
+             coef_rename = solar_coef_labels,
+             coef_omit=c(2:18, 46:61), 
+             add_rows = rows,
+              notes = list('Standard errors clustered at municipality level in parentheses') )
+```
+
+
+Wind TWFE
+```{r}
+monthly_coefplot_wind <- function(dv, df_origin, t_start, t_max, graph_title) {
+  formula_string <- paste(dv, "~ d_wind_pre37_bin+ d_wind_pre.[", t_start, ":1]+ new_mw_wind + d_wind_post.[1:", t_max, "] +d_wind_post25_bin| id_municipio + month^ano")
+  form <- as.formula(formula_string)
+  
+  fe <- feols(form, df_origin, cluster = "id_municipio")
+  
+wind_vars <- c("d_wind_pre[0-9]", "d_wind_post[0-9]", "new_mw_wind")
+   
+solar_vars <- c("d_solar_pre[0-9]", "d_solar_post[0-9]", "new_mw_solar")
+
+  coef <- coef(fe)[grepl(paste0("^(", paste(wind_vars, collapse = "|"), ")"), names(coef(fe)))]
+  se <- se(fe)[grepl(paste0("^(", paste(wind_vars, collapse = "|"), ")"), names(coef(fe)))]
+  df <- data.frame(coef, se) 
+  df<-df%>% mutate(x.axis = c(-37,seq(-35,25,1)))
+    #add the zero coefficient for -37 (comparison time unit)
+  add_row <- data.frame(coef = 0, se = 0, x.axis = -36)
+  df <- rbind(df, add_row)
+  
+  plots <- ggplot(df, aes(x = x.axis, y = coef)) +
+    geom_ribbon(aes(ymin = coef - 1.96 * se, ymax = coef + 1.96 * se), fill = "gray70") +
+    geom_line() +
+    ggtitle(graph_title) +
+    labs(x = "Months before/after commissioning", y = "") +
+    theme_bw() +
+    theme(text = element_text(size = 7)) +
+    scale_x_continuous(expand = c(0.01, 0.01),
+    breaks = c(-37, seq(-32, 20, by = 4), 25),  # Set breaks including custom points
+    labels = c("-37+", paste(seq(-32, 20, by = 4)), "25+")   # Set labels accordingly
+  ) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = 0, linetype = "dashed")
+
+  ggsave(filename = here("output", "regressions", "TWFE 1-to-1 binning", "wind", paste0(dv, ".png")), 
+         plot = plots, 
+         units = "px", width = 2000, height = 1000)
+  return(list(plot = plots, table = df, regression_model=fe))
+  }
+
+
+wind_A<-monthly_coefplot_wind("wind_inst_endmonth", wind_matched_final_monthly, 35,24,"a. Installation")
+wind_B<-monthly_coefplot_wind("wind_om_endmonth", wind_matched_final_monthly, 35,24,"b. O&M")
+wind_C<-monthly_coefplot_wind("wind_comp_endmonth", wind_matched_final_monthly, 35,24,"c. Components")
+wind_D<-monthly_coefplot_wind("wind_other_jobs_endmonth", wind_matched_final_monthly, 35,24,"d. Non-wind sectors")
+wind_E<-monthly_coefplot_wind("avg_wage_2020BRL", wind_matched_final_monthly, 35,24,"Wages")
+wind_G_2<-monthly_coefplot_wind("wind_wage_2020BRL", wind_matched_final_monthly, 35,24,"b. Wind: Wages")
+wind_firms<-monthly_coefplot_wind("no_establishments_wind", wind_matched_final_monthly, 35,24,"c. Wind: Sector Firms")
+wind_H<-monthly_coefplot_wind("tertiary_endmonth", wind_matched_final_monthly, 35,24,"c. Tertiary-educated")
+wind_I<-monthly_coefplot_wind("secondary_endmonth", wind_matched_final_monthly, 35,24,"b. Secondary-educated")
+wind_J<-monthly_coefplot_wind("primary_endmonth", wind_matched_final_monthly, 35,24,"a. Primary-educated")
+monthly_coefplot_wind("wind_jobs_endmonth", wind_matched_final_monthly, 35,24,"Wind Jobs")
+monthly_coefplot_wind("avg_skill_wind", wind_matched_final_monthly, 35,24,"b. Wind: Skill level")
+wind_outside_a<-monthly_coefplot_wind("wind_jobs_outside_endmonth", wind_matched_final_monthly, 35,24,"b. Wind: Sector-specific")
+wind_outside_b<-monthly_coefplot_wind("jobs_outside_endmonth", wind_matched_final_monthly, 35,24,"d. Wind: Total")
+wind_H_2<-monthly_coefplot_wind("wind_tertiary_endmonth", wind_matched_final_monthly, 35,24,"a. Tertiary-educated")
+wind_I_2<-monthly_coefplot_wind("wind_secondary_endmonth", wind_matched_final_monthly, 35,24,"b. Secondary-educated")
+wind_J_2<-monthly_coefplot_wind("wind_primary_endmonth", wind_matched_final_monthly, 35,24,"c. Primary-educated")
+wind_total_firms<-monthly_coefplot_wind("no_establishments_cnpj", wind_matched_final_monthly, 35,24,"d. Wind: Total firms")
+
+
+library(patchwork)
+wind2x2<- wind_A$plot +wind_B$plot + wind_C$plot + wind_D$plot
+ggsave(wind2x2, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main", "wind2x2.png"),units="px", width = 2000, height=1000)
+
+wages_solar_wind<- G$plot + wind_G_2$plot
+ggsave(wages_solar_wind, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main","2x1wages.png"),units="px", width = 2000, height=1000)
+
+wind3x1edu_2<-wind_H_2$plot+wind_I_2$plot+wind_J_2$plot
+ggsave(wind3x1edu_2, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main", "3x1edu_wind_specific.png"),units="px", width = 3000, height=1000)
+
+firm_registrations<- solar_firms$plot+solar_total_firms$plot+ wind_firms$plot + wind_total_firms$plot
+ggsave(firm_registrations, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main", "firm_registration.png"),units="px", width = 2000, height=2000)
+
+
+outside_jobs<-solar_outside_a$plot+wind_outside_a$plot
+ggsave(outside_jobs, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main", "outside_jobs.png"),units="px", width = 2000, height=1000)
+
+#Individual formula to check exact size of coefficients
+wind_inst <- feols(wind_inst_endmonth ~ d_wind_pre37_bin+ d_wind_pre.[35:1] + new_mw_wind+ d_wind_post.[1:24]+d_wind_post25_bin |id_municipio + month^ano, wind_matched_final_monthly, cluster = "id_municipio")
+  summary(wind_inst)
+  
+mean(wind_matched_final_monthly$wind_inst_endmonth[wind_matched_final_monthly$t_wind==8 & wind_matched_final_monthly$wind_treat_postmatch==0], na.rm=TRUE)
+mean(wind_matched_final_monthly$wind_inst_endmonth[wind_matched_final_monthly$t_wind==8 & wind_matched_final_monthly$wind_treat_postmatch==1], na.rm=TRUE)
+
+wind_om <- feols(primary_endmonth ~ d_wind_pre37_bin+ d_wind_pre.[35:1] + new_mw_wind+ d_wind_post.[1:24] |id_municipio + month^ano, wind_matched_final_monthly, cluster = "id_municipio")
+  summary(wind_om)
+mean(wind_matched_final_monthly$wind_om_endmonth[wind_matched_final_monthly$t_wind==8 & wind_matched_final_monthly$wind_treat_postmatch==0], na.rm=TRUE)
+wind_matched_final_monthly$jobs_outside_endmonth
+
+check<-wind_matched_final_monthly%>%group_by(ano)%>%
+  summarise(sums=sum(jobs_outside_endmonth))
+
+# Create regression table output
+wind_coef_labels <- c(
+  "d_wind_pre37_bin" = "t<=-37",
+  "d_wind_pre36" = "t=-36",
+  "d_wind_pre35" = "t=-35",
+  "d_wind_pre34" = "t=-34",
+  "d_wind_pre33" = "t=-33",
+  "d_wind_pre32" = "t=-32",
+  "d_wind_pre31" = "t=-31",
+  "d_wind_pre30" = "t=-30",
+  "d_wind_pre29" = "t=-29",
+  "d_wind_pre28" = "t=-28",
+  "d_wind_pre27" = "t=-27",
+  "d_wind_pre26" = "t=-26",
+  "d_wind_pre25" = "t=-25",
+  "d_wind_pre24" = "t=-24",
+  "d_wind_pre23" = "t=-23",
+  "d_wind_pre22" = "t=-22",
+  "d_wind_pre21" = "t=-21",
+  "d_wind_pre20" = "t=-20",
+  "d_wind_pre19" = "t=-19",
+  "d_wind_pre18" = "t=-18",
+  "d_wind_pre17" = "t=-17",
+  "d_wind_pre16" = "t=-16",
+  "d_wind_pre15" = "t=-15",
+  "d_wind_pre14" = "t=-14",
+  "d_wind_pre13" = "t=-13",
+  "d_wind_pre12" = "t=-12",
+  "d_wind_pre11" = "t=-11",
+  "d_wind_pre10" = "t=-10",
+  "d_wind_pre9" = "t=-9",
+  "d_wind_pre8" = "t=-8",
+  "d_wind_pre7" = "t=-7",
+  "d_wind_pre6" = "t=-6",
+  "d_wind_pre5" = "t=-5",
+  "d_wind_pre4" = "t=-4",
+  "d_wind_pre3" = "t=-3",
+  "d_wind_pre2" = "t=-2",
+  "d_wind_pre1" = "t=-1",
+  "new_mw_wind" = "t=0",
+  "d_wind_post1" = "t=1",
+  "d_wind_post2" = "t=2",
+  "d_wind_post3" = "t=3",
+  "d_wind_post4" = "t=4",
+  "d_wind_post5" = "t=5",
+  "d_wind_post6" = "t=6",
+  "d_wind_post7" = "t=7",
+  "d_wind_post8" = "t=8",
+  "d_wind_post9" = "t=9",
+  "d_wind_post10" = "t=10",
+  "d_wind_post11" = "t=11",
+  "d_wind_post12" = "t=12",
+  "d_wind_post13" = "t=13",
+  "d_wind_post14" = "t=14",
+  "d_wind_post15" = "t=15",
+  "d_wind_post16" = "t=16",
+  "d_wind_post17" = "t=17",
+  "d_wind_post18" = "t=18",
+  "d_wind_post19" = "t=19",
+  "d_wind_post20" = "t=20",
+  "d_wind_post21" = "t=21",
+  "d_wind_post22" = "t=22",
+  "d_wind_post23" = "t=23",
+  "d_wind_post24" = "t=24",
+  "d_wind_post25" = "t=25",
+  "d_wind_post25_bin" = "t>=25"
+)
+
+models_list_wind <- list("Installation"=wind_A$regression_model, "O&M"=wind_B$regression_model, "Components"=wind_C$regression_model,"Non-sector jobs"=wind_D$regression_model,"Avg. Wages"=wind_E$regression_model,"Avg. Sector Wage"=wind_G_2$regression_model, "primary"=wind_H_2$regression_model, "secondary"=wind_I_2$regression_model, "tertiary"=wind_J_2$regression_model)
+rows<-tribble(~name,   ~name,    ~name, ~name, ~name,  ~name,    ~name, ~name, ~name, ~name, "Municipality FE", "YES", "YES", "YES", "YES","YES", "YES", "YES", "YES","YES",
+        "Month-Year FE", "YES", "YES", "YES", "YES","YES", "YES", "YES", "YES", "YES")
+modelsummary(models_list_wind,
+             output = here("output", "regressions", "TWFE 1-to-1 binning", "final figures", "appendix", "wind_reg_monthly.tex"),
+             fmt = 2,  # Format the numbers to 2 decimal places
+             stars =  c('*' = .1, '**' = .05, '***' = .01),  # Add stars for statistical significance, 
+             gof_map = c("nobs", "r.squared"), # Optional: omit goodness-of-fit stats
+             coef_rename = wind_coef_labels,
+             coef_omit=c(2:18, 46:61), 
+             add_rows = rows,
+              notes = list('Standard errors clustered at municipality level in parentheses') )
+```
+
+
+Solar: Repeat with annual data
+```{r}
+options(scipen=999)
+library(scales)  # For comma formatting
+#Function for the coefficient plots of the regressions
+annual_coefplot_solar <- function(dv, df_origin, t_start, t_max, graph_t_min, graph_t_max, graph_title) {
+  formula_string <- paste(dv, "~ d_solar_pre7_bin+ d_solar_pre.[", t_start, ":4] +d_solar_pre.[2:1]+ new_mw_solar + d_solar_post.[1:", t_max, "] +d_solar_post4_bin| id_municipio + ano")
+  form <- as.formula(formula_string)
+  
+  fe <- feols(form, df_origin, cluster = "id_municipio")
+  
+solar_vars <- c("d_solar_pre[0-9]", "d_solar_post[0-9]", "new_mw_solar")
+   
+wind_vars <- c("d_wind_pre[0-9]", "d_wind_post[0-9]", "new_mw_wind")
+
+  coef <- coef(fe)[grepl(paste0("^(", paste(solar_vars, collapse = "|"), ")"), names(coef(fe)))]
+  se <- se(fe)[grepl(paste0("^(", paste(solar_vars, collapse = "|"), ")"), names(coef(fe)))]
+  df <- data.frame(coef, se) 
+  df<-df%>% mutate(x.axis = c(seq(graph_t_min, -4, 1),seq(-2,graph_t_max,1)))
+    #add the zero coefficient for -24 (comparison time unit)
+  add_row <- data.frame(coef = 0, se = 0, x.axis = -3)
+  df <- rbind(df, add_row)
+  
+  plots <- ggplot(df, aes(x = x.axis, y = coef)) +
+    geom_ribbon(aes(ymin = coef - 1.96 * se, ymax = coef + 1.96 * se), fill = "gray70") +
+    geom_line() +
+    ggtitle(graph_title) +
+    labs(x = "Years before/after commissioning", y = "") +
+    theme_bw() +
+    theme(text = element_text(size = 7)) +
+    scale_x_continuous(breaks = seq(graph_t_min, graph_t_max, 1),
+                      labels = c(paste0(graph_t_min,"+"), paste(seq(graph_t_min+1, graph_t_max-1, by = 1)), paste0(graph_t_max,"+")))+
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = 0, linetype = "dashed")+
+            scale_y_continuous(labels = comma)
+
+
+  ggsave(filename = here("output", "regressions", "TWFE 1-to-1 binning", "solar", paste0(dv, ".png")), 
+         plot = plots, 
+         units = "px", width = 2000, height = 1000)
+    return(list(plot = plots, table = df, regression_model=fe))
+}
+
+#Employment and wages
+annual_coefplot_solar("solar_installation_jobs_3112_total", solar_matched_final_annual, 6,3,-7,4,"A. Installation")
+annual_coefplot_solar("solar_om_jobs_3112_total", solar_matched_final_annual, 6,3,-7,4,"B. O&M")
+annual_coefplot_solar("solar_component_jobs_3112_total", solar_matched_final_annual, 6,3,-7,4,"C. Component")
+annual_coefplot_solar("total_jobs_3112", solar_matched_final_annual, 6,3,-7,4,"D. Total Jobs")
+annual_coefplot_solar("avg_wage_2020_BRL", solar_matched_final_annual, 6,3,-7,4,"Wages")
+annual_coefplot_solar("total_establishment", solar_matched_final_annual, 6,3,-7,4,"Total Firms")
+annual_coefplot_solar("tertiary_edu_3112", solar_matched_final_annual, 6,3,-7,4,"Tertiary-educated")
+annual_coefplot_solar("secondary_edu_3112", solar_matched_final_annual, 6,3,-7,4,"Secondary-educated")
+annual_coefplot_solar("primary_edu_3112", solar_matched_final_annual, 6,3,-7,4,"Primary-educated")
+
+#GDP
+gdp_pc_solar<-annual_coefplot_solar("gdp_pc", solar_matched_final_annual, 6,3,-7,4,"a. Solar: GDP per Capita")
+gdp_solar<-annual_coefplot_solar("pib_clean_constant2020_BRL", solar_matched_final_annual, 6,3,-7,4,"a. Solar")
+ind_solar<-annual_coefplot_solar("va_industria_constant2020_BRL", solar_matched_final_annual, 6,3,-7,4,"a. Industry: Value-added")
+agro_solar<-annual_coefplot_solar("va_agropecuaria_constant2020_BRL", solar_matched_final_annual, 6,3,-7,4,"b. Agriculture: Value-added")
+services_solar<-annual_coefplot_solar("va_servicos_constant2020_BRL", solar_matched_final_annual, 6,3,-7,4,"c. Services: Value-added")
+publicsector_solar<-annual_coefplot_solar("va_adespss_constant2020_BRL", solar_matched_final_annual, 6,3,-7,4,"d. Public Sector: Value-added")
+
+va_solar<- ind_solar$plot + agro_solar$plot + services_solar$plot + publicsector_solar$plot
+ggsave(va_solar, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main","va_solar.png"),units="px", width = 2000, height=2000)
+
+
+#Receipts-main
+receipts_solar<-annual_coefplot_solar("total_receipt_BRL2020", solar_matched_final_annual, 6,3,-7,4,"a. Total Public Receipts")
+taxes_solar<-annual_coefplot_solar("taxes_fees", solar_matched_final_annual, 6,3,-7,4,"b. Taxes and Fees")
+
+participation_state_receipts<-annual_coefplot_solar("participation_state_receipts", solar_matched_final_annual, 6,3,-7,4,"c. Participation in state receipts")
+participation_federal_receipts<-annual_coefplot_solar("participation_federal_receipts", solar_matched_final_annual, 6,3,-7,4,"d. Participation in federal receipts")
+
+receipts_solar_all<-receipts_solar$plot+taxes_solar$plot+participation_state_receipts$plot+participation_federal_receipts$plot
+ggsave(receipts_solar_all, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main","receipts_solar.png"),units="px", width = 2000, height=2000)
+
+
+
+#Receipts-Appendix
+receiptspc_solar<-annual_coefplot_solar("total_receipt_pc", solar_matched_final_annual, 6,3,-7,4,"a. Receipts per capita")
+servicestax_solar<-annual_coefplot_solar("service_tax", solar_matched_final_annual, 6,3,-7,4,"a. Services tax")
+share_icms_solar<-annual_coefplot_solar("share_icms", solar_matched_final_annual, 6,3,-7,4,"b. Share of Goods and Services Tax (ICMS)")
+iptu_solar<-annual_coefplot_solar("iptu", solar_matched_final_annual, 6,3,-7,4,"c. Urban Property Tax (IPTU)")
+itbi_solar<-annual_coefplot_solar("itbi", solar_matched_final_annual, 6,3,-7,4,"d. Rural Property Tax (ITBI)")
+share_ipi_solar<-annual_coefplot_solar("share_ipi", solar_matched_final_annual, 6,3,-7,4,"e. Share of industry tax (IPI)")
+capital_receipts<-annual_coefplot_solar("capital_receipts", solar_matched_final_annual, 6,3,-7,4,"f. Capital Receipts")
+
+receipts_solar_appendix<-servicestax_solar$plot+share_icms_solar$plot+iptu_solar$plot+itbi_solar$plot+share_ipi_solar$plot+capital_receipts$plot
+
+ggsave(receipts_solar_appendix, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix","receipts_solar_appendix.png"),units="px", width = 3000, height=2000)
+
+
+pop_solar<-annual_coefplot_solar("populacao", solar_matched_final_annual, 6,3,-7,4,"a. Solar")
+transfers_solar<-annual_coefplot_solar("intergov_transfers", solar_matched_final_annual, 6,3,-7,4,"Transfer from state or federal level")
+private_firms_solar<-annual_coefplot_solar("private_est_total", solar_matched_final_annual, 6,3,-7,4,"a. Solar: Private Firms")
+taxes_solar_nofees<-annual_coefplot_solar("taxes", solar_matched_final_annual, 6,3,-7,4,"Taxes")
+total_excl_intra<-annual_coefplot_solar("total_receipts_excl_intrab", solar_matched_final_annual, 6,3,-7,4,"c. Total receipt (excl. intrabudgetary)")
+industry_receipts<-annual_coefplot_solar("total_receipts_excl_intrab", solar_matched_final_annual, 6,3,-7,4,"Industry receipts")
+asset_sales_capital<-annual_coefplot_solar("asset_sales_capital", solar_matched_final_annual, 6,3,-7,4,"Public asset sales")
+asset_receipts_current<-annual_coefplot_solar("asset_receipts_current", solar_matched_final_annual, 6,3,-7,4,"Current receipts from assets")
+current_transfers<-annual_coefplot_solar("current_transfers", solar_matched_final_annual, 6,3,-7,4,"Current Transfers")
+service_receipts_current<-annual_coefplot_solar("service_receipts_current", solar_matched_final_annual, 6,3,-7,4,"Receipts from services")
+private_transfers_current<-annual_coefplot_solar("transfer_private", solar_matched_final_annual, 6,3,-7,4,"Transfers from private institutions")
+person_transfers_current<-annual_coefplot_solar("transfer_persons", solar_matched_final_annual, 6,3,-7,4,"Transfers from individuals")
+exterior_transfers_current<-annual_coefplot_solar("transfer_exterior", solar_matched_final_annual, 6,3,-7,4,"Transfers from exterior")
+transfer_municip<-annual_coefplot_solar("transfer_municip", solar_matched_final_annual, 6,3,-7,4,"Transfers from municipalities")
+transfer_otherpublic<-annual_coefplot_solar("transfer_otherpublic", solar_matched_final_annual, 6,3,-7,4,"Transfers from other public institutions")
+transfers_federal<-annual_coefplot_solar("transfers_federal", solar_matched_final_annual, 6,3,-7,4,"Transfers from federal government")
+transfers_state<-annual_coefplot_solar("transfers_state", solar_matched_final_annual, 6,3,-7,4,"Transfers from state government")
+other_current_transfers<-annual_coefplot_solar("other_current_transfers", solar_matched_final_annual, 6,3,-7,4,"Other current transfers")
+share_fpm<-annual_coefplot_solar("share_fpm", solar_matched_final_annual, 6,3,-7,4,"Share of Municipal Fund")
+current_intrabudg<-annual_coefplot_solar("current_intrabudg", solar_matched_final_annual, 6,3,-7,4,"Intrabudgetary Transfers-Current")
+capital_intrabudg<-annual_coefplot_solar("capital_intrabudg", solar_matched_final_annual, 6,3,-7,4,"Intrabudgetary Transfers-Capital")
+
+spendingpc_solar<-annual_coefplot_solar("spending_pc", solar_matched_final_annual, 6,3,-7,4,"a. Spending per capita")
+spending_solar<-annual_coefplot_solar("total_spending", solar_matched_final_annual, 6,3,-7,4,"b. Total Public Spending")
+spending_social_ass<-annual_coefplot_solar("spending_social_ass", solar_matched_final_annual, 6,3,-7,4,"c. Social Assistance")
+spending_health<-annual_coefplot_solar("spending_health", solar_matched_final_annual, 6,3,-7,4,"d. Health")
+spending_industry_commerce<-annual_coefplot_solar("spending_industry_commerce", solar_matched_final_annual, 6,3,-7,4,"e. Industry & Commerce")
+spending_housing<-annual_coefplot_solar("spending_housing", solar_matched_final_annual, 6,3,-7,4,"f. Housing")
+spending_education<-annual_coefplot_solar("spending_education", solar_matched_final_annual, 6,3,-7,4,"g. Education")
+spending_infra<-annual_coefplot_solar("spending_infra", solar_matched_final_annual, 6,3,-7,4,"h. Infrastructure")
+spending_agriculture<-annual_coefplot_solar("spending_agriculture", solar_matched_final_annual, 6,3,-7,4,"i. Agriculture")
+spending_labor<-annual_coefplot_solar("spending_labor", solar_matched_final_annual, 6,3,-7,4,"i. Labor")
+spending_energy<-annual_coefplot_solar("spending_energy", solar_matched_final_annual, 6,3,-7,4,"Energy")
+spending_environ<-annual_coefplot_solar("spending_environ", solar_matched_final_annual, 6,3,-7,4,"Environment")
+
+
+spending_solar_reg<-spendingpc_solar$plot+spending_solar$plot+spending_social_ass$plot+spending_health$plot+spending_industry_commerce$plot+spending_housing$plot+spending_education$plot+spending_infra$plot+spending_agriculture$plot
+
+ggsave(spending_solar_reg, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix","spending_solar.png"),units="px", width = 2500, height=3000)
+
+
+
+#####Regression tables#####################################################################
+solar_coef_labels_annual <- c( "d_solar_pre7_bin" = "t<=-7",
+  "d_solar_pre6" = "t=-6",
+  "d_solar_pre5" = "t=-5",
+  "d_solar_pre4" = "t=-4",
+  "d_solar_pre3" = "t=-3",
+  "d_solar_pre2" = "t=-2",
+  "d_solar_pre1" = "t=-1",
+  "new_mw_solar" = "t=0",
+  "d_solar_post1" = "t=1",
+  "d_solar_post2" = "t=2",
+  "d_solar_post3" = "t=3",
+  "d_solar_post4_bin" = "t>=4")
+
+annual_gdp_solar <- list("GDP (Solar)"=gdp_solar$regression_model, "Ind. VA (Solar)"=ind_solar$regression_model, "Agri VA (Solar)"=agro_solar$regression_model,"Services VA (Solar)"=services_solar$regression_model,"Public Sector VA (Solar)"=publicsector_solar$regression_model,"Services Tax"=servicestax_solar$regression_model, "Sales Tax"=share_icms_solar$regression_model, "Urban Property Tax"=iptu_solar$regression_model, "Rural Property Tax"=itbi_solar$regression_model)
+rows<-tribble(~name,   ~name,    ~name, ~name, ~name,  ~name,    ~name, ~name, ~name, ~name, "Municipality FE", "YES", "YES", "YES", "YES","YES", "YES", "YES", "YES","YES",
+        "Month-Year FE", "YES", "YES", "YES", "YES","YES", "YES", "YES", "YES", "YES")
+
+modelsummary(annual_gdp_solar,
+             output = here("output", "regressions", "TWFE 1-to-1 binning", "final figures", "appendix", "solar_reg_annual_gdp.tex"),
+             fmt = 2,  # Format the numbers to 2 decimal places
+             stars =  c('*' = .1, '**' = .05, '***' = .01),  # Add stars for statistical significance, 
+             gof_map = c("nobs", "r.squared"), # Optional: omit goodness-of-fit stats
+             coef_rename = solar_coef_labels_annual,
+             add_rows = rows,
+              notes = list('Standard errors clustered at municipality level in parentheses') )
+
+
+annual_spending_solar <- list("Spending p.c."=spendingpc_solar$regression_model, 
+                              "Total spending"=spending_solar$regression_model, 
+                              "Social Assistance"=spending_social_ass$regression_model,
+                              "Health"=spending_health$regression_model,
+                              "Industry/Commerce"=spending_industry_commerce$regression_model,
+                              "Housing"=spending_housing$regression_model, 
+                               "Education"=spending_education$regression_model,
+                              "Infrastructure"=spending_infra$regression_model, 
+                              "Agriculture"=spending_agriculture$regression_model)
+
+modelsummary(annual_spending_solar,
+             output = here("output", "regressions", "TWFE 1-to-1 binning", "final figures", "appendix", "solar_reg_annual_spending.tex"),
+             fmt = 2,  # Format the numbers to 2 decimal places
+             stars =  c('*' = .1, '**' = .05, '***' = .01),  # Add stars for statistical significance, 
+             gof_map = c("nobs", "r.squared"), # Optional: omit goodness-of-fit stats
+             coef_rename = solar_coef_labels_annual,
+             add_rows = rows,
+            notes = list('Standard errors clustered at municipality level in parentheses') )
+```
+
+wind: Repeat with annual data
+```{r}
+annual_coefplot_wind <- function(dv, df_origin, t_start, t_max, graph_t_min, graph_t_max, graph_title) {
+  formula_string <- paste(dv, "~ d_wind_pre7_bin+ d_wind_pre.[", t_start, ":4] +d_wind_pre.[2:1]+ new_mw_wind + d_wind_post.[1:", t_max, "] +d_wind_post6_bin| id_municipio + ano")
+  form <- as.formula(formula_string)
+  
+  fe <- feols(form, df_origin, cluster = "id_municipio")
+  
+wind_vars <- c("d_wind_pre[0-9]", "d_wind_post[0-9]", "new_mw_wind")
+   
+wind_vars <- c("d_wind_pre[0-9]", "d_wind_post[0-9]", "new_mw_wind")
+
+  coef <- coef(fe)[grepl(paste0("^(", paste(wind_vars, collapse = "|"), ")"), names(coef(fe)))]
+  se <- se(fe)[grepl(paste0("^(", paste(wind_vars, collapse = "|"), ")"), names(coef(fe)))]
+  df <- data.frame(coef, se) 
+  df<-df%>% mutate(x.axis = c(seq(graph_t_min, -4, 1),seq(-2,graph_t_max,1)))
+    #add the zero coefficient for -24 (comparison time unit)
+  add_row <- data.frame(coef = 0, se = 0, x.axis = -3)
+  df <- rbind(df, add_row)
+  
+  plots <- ggplot(df, aes(x = x.axis, y = coef)) +
+    geom_ribbon(aes(ymin = coef - 1.96 * se, ymax = coef + 1.96 * se), fill = "gray70") +
+    geom_line() +
+    ggtitle(graph_title) +
+    labs(x = "Years before/after commissioning", y = "") +
+    theme_bw() +
+    theme(text = element_text(size = 7)) +
+    scale_x_continuous(breaks = seq(graph_t_min, graph_t_max, 1),
+                      labels = c(paste0(graph_t_min,"+"), paste(seq(graph_t_min+1, graph_t_max-1, by = 1)), paste0(graph_t_max,"+"))) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = 0, linetype = "dashed")+
+        scale_y_continuous(labels = comma)
+
+  ggsave(filename = here("output", "regressions", "TWFE 1-to-1 binning", "wind", paste0(dv, ".png")), 
+         plot = plots, 
+         units = "px", width = 2000, height = 1000)
+      return(list(plot = plots, table = df, regression_model=fe))
+
+}
+#Employment and wages
+annual_coefplot_wind("wind_installation_jobs_3112_total", wind_matched_final_annual, 6,5,-7,6,"A. Installation")
+annual_coefplot_wind("wind_om_jobs_3112_total", wind_matched_final_annual, 6,5,-7,6,"B. O&M")
+annual_coefplot_wind("wind_component_jobs_3112_total", wind_matched_final_annual, 6,5,-7,6,"C. Component")
+annual_coefplot_wind("total_jobs_3112", wind_matched_final_annual, 6,5,-7,6,"D. Total Jobs")
+annual_coefplot_wind("avg_wage_2020_BRL", wind_matched_final_annual, 6,5,-7,6,"Wages")
+annual_coefplot_wind("total_establishment", wind_matched_final_annual, 6,5,-7,6,"Total Firms")
+annual_coefplot_wind("tertiary_edu_3112", wind_matched_final_annual, 6,5,-7,6,"Tertiary-educated")
+annual_coefplot_wind("secondary_edu_3112", wind_matched_final_annual, 6,5,-7,6,"Secondary-educated")
+annual_coefplot_wind("primary_edu_3112", wind_matched_final_annual, 6,5,-7,6,"Primary-educated")
+
+#GDP
+gdp_pc_wind<-annual_coefplot_wind("gdp_pc", wind_matched_final_annual, 6,5,-7,6,"b. Wind: GDP per Capita")
+gdp_wind<-annual_coefplot_wind("pib_clean_constant2020_BRL", wind_matched_final_annual, 6,5,-7,6,"b. Wind")
+ind_wind<-annual_coefplot_wind("va_industria_constant2020_BRL", wind_matched_final_annual, 6,5,-7,6,"a. Industry: Value-added")
+agro_wind<-annual_coefplot_wind("va_agropecuaria_constant2020_BRL", wind_matched_final_annual, 6,5,-7,6,"b. Agriculture: Value-added")
+services_wind<-annual_coefplot_wind("va_servicos_constant2020_BRL", wind_matched_final_annual, 6,5,-7,6,"c. Servicos: Value-added")
+publicsector_wind<-annual_coefplot_wind("va_adespss_constant2020_BRL", wind_matched_final_annual, 6,5,-7,6,"d. Public Sector: Value-added")
+
+va_wind<- ind_wind$plot + agro_wind$plot + services_wind$plot+ publicsector_wind$plot
+ggsave(va_wind, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main","va_wind.png"),units="px", width = 2000, height=2000)
+
+gdp_both<-gdp_solar$plot+gdp_wind$plot
+ggsave(gdp_both, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main","gdp.png"),units="px", width = 2000, height=1000)
+
+gdp_pc_both<-gdp_pc_wind$plot+gdp_pc_solar$plot
+ggsave(gdp_both, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix","gdppc.png"),units="px", width = 2000, height=1000)
+
+#Receipts-main
+receipts_wind<-annual_coefplot_wind("total_receipt_BRL2020", wind_matched_final_annual, 6,5,-7,6,"a. Total Public Receipts")
+taxes_wind<-annual_coefplot_wind("taxes_fees", wind_matched_final_annual, 6,5,-7,6,"b. Taxes and Fees")
+participation_state_receipts<-annual_coefplot_wind("participation_state_receipts", wind_matched_final_annual, 6,5,-7,6,"c. Participation in state receipts")
+participation_federal_receipts<-annual_coefplot_wind("participation_federal_receipts", wind_matched_final_annual, 6,5,-7,6,"d. Participation in federal receipts")
+
+receipts_wind_all<-receipts_wind$plot+taxes_wind$plot+participation_state_receipts$plot+participation_federal_receipts$plot
+ggsave(receipts_wind_all, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main","receipts_wind.png"),units="px", width = 2000, height=2000)
+
+
+
+#Receipts-Appendix
+receiptspc_wind<-annual_coefplot_wind("total_receipt_pc", wind_matched_final_annual, 6,5,-7,6,"a. Receipts per capita")
+servicestax_wind<-annual_coefplot_wind("service_tax", wind_matched_final_annual, 6,5,-7,6,"a. Services tax")
+share_icms_wind<-annual_coefplot_wind("share_icms", wind_matched_final_annual, 6,5,-7,6,"b. Share of Goods ansd Services Tax (ICMS)")
+iptu_wind<-annual_coefplot_wind("iptu", wind_matched_final_annual, 6,5,-7,6,"c. Urban Property Tax (IPTU)")
+itbi_wind<-annual_coefplot_wind("itbi", wind_matched_final_annual, 6,5,-7,6,"d. Rural Property Tax (ITBI)")
+share_ipi_wind<-annual_coefplot_wind("share_ipi", wind_matched_final_annual, 6,3,-7,4,"e. Share of industry tax (IPI)")
+capital_receipts_wind<-annual_coefplot_wind("capital_receipts", wind_matched_final_annual, 6,5,-7,6,"f. Capital Receipts")
+
+receipts_wind_appendix<-servicestax_wind$plot+share_icms_wind$plot+iptu_wind$plot+itbi_wind$plot+share_ipi_wind$plot+capital_receipts_wind$plot
+ggsave(receipts_wind_appendix, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix","receipts_wind_appendix.png"),units="px", width = 3000, height=2000)
+
+
+pop_wind<-annual_coefplot_wind("populacao", wind_matched_final_annual, 6,5,-7,6,"b. Wind")
+transfers_wind<-annual_coefplot_wind("intergov_transfers", wind_matched_final_annual, 6,5,-7,6,"Transfer from state or federal level")
+private_firms_wind<-annual_coefplot_wind("private_est_total", wind_matched_final_annual, 6,5,-7,6,"b. Wind: Private Firms")
+taxes_wind_nofees<-annual_coefplot_wind("taxes", wind_matched_final_annual, 6,5,-7,6,"Taxes")
+total_excl_intra<-annual_coefplot_wind("total_receipts_excl_intrab", wind_matched_final_annual, 6,5,-7,6,"c. Total receipt (excl. intrabudgetary)")
+industry_receipts<-annual_coefplot_wind("total_receipts_excl_intrab", wind_matched_final_annual, 6,5,-7,6,"Industry receipts")
+asset_sales_capital<-annual_coefplot_wind("asset_sales_capital", wind_matched_final_annual, 6,5,-7,6,"Public asset sales")
+asset_receipts_current<-annual_coefplot_wind("asset_receipts_current", wind_matched_final_annual, 6,5,-7,6,"Current receipts from assets")
+current_transfers<-annual_coefplot_wind("current_transfers", wind_matched_final_annual, 6,5,-7,6,"Current Transfers")
+service_receipts_current<-annual_coefplot_wind("service_receipts_current", wind_matched_final_annual, 6,5,-7,6,"Receipts from services")
+private_transfers_current<-annual_coefplot_wind("transfer_private", wind_matched_final_annual, 6,5,-7,6,"Transfers from private institutions")
+person_transfers_current<-annual_coefplot_wind("transfer_persons", wind_matched_final_annual, 6,5,-7,6,"Transfers from individuals")
+exterior_transfers_current<-annual_coefplot_wind("transfer_exterior", wind_matched_final_annual, 6,5,-7,6,"Transfers from exterior")
+transfer_municip<-annual_coefplot_wind("transfer_municip", wind_matched_final_annual, 6,5,-7,6,"Transfers from municipalities")
+transfer_otherpublic<-annual_coefplot_wind("transfer_otherpublic", wind_matched_final_annual, 6,5,-7,6,"Transfers from other public institutions")
+transfers_federal<-annual_coefplot_wind("transfers_federal", wind_matched_final_annual, 6,5,-7,6,"Transfers from federal government")
+transfers_state<-annual_coefplot_wind("transfers_state", wind_matched_final_annual, 6,5,-7,6,"Transfers from state government")
+share_ipi<-annual_coefplot_wind("share_ipi", wind_matched_final_annual, 6,5,-7,6,"Share of industry tax (IPI)")
+other_current_transfers<-annual_coefplot_wind("other_current_transfers", wind_matched_final_annual, 6,5,-7,6,"Other current transfers")
+share_fpm<-annual_coefplot_wind("share_fpm", wind_matched_final_annual, 6,5,-7,6,"Share of Municipal Fund")
+current_intrabudg<-annual_coefplot_wind("current_intrabudg", wind_matched_final_annual, 6,5,-7,6,"Intrabudgetary Transfers-Current")
+capital_intrabudg<-annual_coefplot_wind("capital_intrabudg", wind_matched_final_annual, 6,5,-7,6,"Intrabudgetary Transfers-Capital")
+
+
+spendingpc_wind<-annual_coefplot_wind("spending_pc", wind_matched_final_annual, 6,5,-7,6,"a. Spending per capita")
+spending_wind<-annual_coefplot_wind("total_spending", wind_matched_final_annual, 6,5,-7,6,"b. Total Public Spending")
+spending_social_ass<-annual_coefplot_wind("spending_social_ass", wind_matched_final_annual, 6,5,-7,6,"c. Social Assistance")
+spending_health<-annual_coefplot_wind("spending_health", wind_matched_final_annual, 6,5,-7,6,"d. Health")
+spending_industry_commerce<-annual_coefplot_wind("spending_industry_commerce", wind_matched_final_annual, 6,5,-7,6,"e. Industry & Commerce")
+spending_housing<-annual_coefplot_wind("spending_housing", wind_matched_final_annual, 6,5,-7,6,"f. Housing")
+spending_education<-annual_coefplot_wind("spending_education", wind_matched_final_annual, 6,5,-7,6,"g. Education")
+spending_infra<-annual_coefplot_wind("spending_infra", wind_matched_final_annual, 6,5,-7,6,"h. Infrastructure")
+spending_agriculture<-annual_coefplot_wind("spending_agriculture", wind_matched_final_annual, 6,5,-7,6,"i. Agriculture")
+spending_labor<-annual_coefplot_wind("spending_labor", wind_matched_final_annual, 6,5,-7,6,"i. Labor")
+spending_energy<-annual_coefplot_wind("spending_energy", wind_matched_final_annual, 6,5,-7,6,"Energy")
+spending_environ<-annual_coefplot_wind("spending_environ", wind_matched_final_annual, 6,5,-7,6,"Environment")
+
+
+spending_wind_reg<-spendingpc_wind$plot+spending_wind$plot+spending_social_ass$plot+spending_health$plot+spending_industry_commerce$plot+spending_housing$plot+spending_education$plot+spending_infra$plot+spending_agriculture$plot
+ggsave(spending_wind_reg, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","main","spending_wind.png"),units="px", width = 2500, height=3000)
+
+
+
+
+pop_both<-pop_solar$plot+pop_wind$plot
+ggsave(pop_both, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix","pop.png"),units="px", width = 2000, height=1000)
+
+
+firms_both<-private_firms_solar$plot+private_firms_wind$plot
+ggsave(firms_both, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix","private_firms.png"),units="px", width = 2000, height=1000)
+
+gdppc_both<-gdp_pc_solar$plot+gdp_pc_wind$plot
+ggsave(gdppc_both, filename=here("output","regressions","TWFE 1-to-1 binning", "final figures","appendix","gdp_pc.png"),units="px", width = 2000, height=1000)
+
+
+#############################WIND Regression Tables###########################################################
+#####Regression tables#####################################################################
+wind_coef_labels_annual <- c( "d_wind_pre7_bin" = "t<=-7",
+  "d_wind_pre6" = "t=-6",
+  "d_wind_pre5" = "t=-5",
+  "d_wind_pre4" = "t=-4",
+  "d_wind_pre3" = "t=-3",
+  "d_wind_pre2" = "t=-2",
+  "d_wind_pre1" = "t=-1",
+  "new_mw_wind" = "t=0",
+  "d_wind_post1" = "t=1",
+  "d_wind_post2" = "t=2",
+  "d_wind_post3" = "t=3",
+  "d_wind_post4" = "t=4",
+  "d_wind_post5" = "t=5",
+  "d_wind_post6_bin" = "t>=6")
+
+annual_gdp_wind <- list("GDP (wind)"=gdp_wind$regression_model, "Ind. VA (wind)"=ind_wind$regression_model, "Agri VA (wind)"=agro_wind$regression_model,"Services VA (wind)"=services_wind$regression_model,"Public Sector VA (wind)"=publicsector_wind$regression_model,"Services Tax"=servicestax_wind$regression_model, "Sales Tax"=share_icms_wind$regression_model, "Urban Property Tax"=iptu_wind$regression_model, "Rural Property Tax"=itbi_wind$regression_model)
+rows<-tribble(~name,   ~name,    ~name, ~name, ~name,  ~name,    ~name, ~name, ~name, ~name, "Municipality FE", "YES", "YES", "YES", "YES","YES", "YES", "YES", "YES","YES",
+        "Month-Year FE", "YES", "YES", "YES", "YES","YES", "YES", "YES", "YES", "YES")
+
+modelsummary(annual_gdp_wind,
+             output = here("output", "regressions", "TWFE 1-to-1 binning", "final figures", "appendix", "wind_reg_annual_gdp.tex"),
+             fmt = 2,  # Format the numbers to 2 decimal places
+             stars =  c('*' = .1, '**' = .05, '***' = .01),  # Add stars for statistical significance, 
+             gof_map = c("nobs", "r.squared"), # Optional: omit goodness-of-fit stats
+             coef_rename = wind_coef_labels_annual,
+             add_rows = rows,
+              notes = list('Standard errors clustered at municipality level in parentheses') )
+
+annual_spending_wind <- list("Spending p.c."=spendingpc_wind$regression_model, "Total spending"=spending_wind$regression_model, "Social Assistance"=spending_social_ass$regression_model,"Health"=spending_health$regression_model,"Industry/Commerce"=spending_industry_commerce$regression_model,"Housing"=spending_housing$regression_model, "Infrastructure"=spending_infra$regression_model, "Agriculture"=spending_agriculture$regression_model, "Rural Property Tax"=itbi_wind$regression_model)
+rows<-tribble(~name,   ~name,    ~name, ~name, ~name,  ~name,    ~name, ~name, ~name, ~name, "Municipality FE", "YES", "YES", "YES", "YES","YES", "YES", "YES", "YES","YES",
+        "Month-Year FE", "YES", "YES", "YES", "YES","YES", "YES", "YES", "YES", "YES")
+
+modelsummary(annual_spending_wind,
+             output = here("output", "regressions", "TWFE 1-to-1 binning", "final figures", "appendix", "wind_reg_annual_spending.tex"),
+             fmt = 2,  # Format the numbers to 2 decimal places
+             stars =  c('*' = .1, '**' = .05, '***' = .01),  # Add stars for statistical significance, 
+             gof_map = c("nobs", "r.squared"), # Optional: omit goodness-of-fit stats
+             coef_rename = wind_coef_labels_annual,
+             add_rows = rows,
+              notes = list('Standard errors clustered at municipality level in parentheses') )
+```
+
+
+Solar Calculations:
+```{r}
+#Solar
+#Calculations: 
+gdp_solar2 <- feols(pib_clean_constant2020_BRL ~ d_solar_pre7_bin+d_solar_pre.[6:4] +d_solar_pre.[2:1]+ new_mw_solar+ d_solar_post.[1:3]+d_solar_post4_bin |id_municipio + ano, solar_matched_final_annual)
+summary(gdp_solar2)
+mean(solar_matched_final_annual$pib_clean_constant2020_BRL[solar_matched_final_annual$solar_treat_postmatch==0 & solar_matched_final_annual$t_solar==1], na.rm = TRUE)
+
+gdp_solar <- feols(va_industria_constant2020_BRL ~ d_solar_pre7_bin+d_solar_pre.[6:4] +d_solar_pre.[2:1]+ new_mw_solar+ d_solar_post.[1:3]+d_solar_post4_bin |id_municipio + ano, solar_matched_final_annual)
+summary(gdp_solar)
+918620.628      *64   
+
+
+
+mean(solar_matched_final_annual$pib_clean_constant2020_BRL[solar_matched_final_annual$solar_treat_postmatch==0 & solar_matched_final_annual$t_solar==1], na.rm = TRUE)
+mean(wind_matched_final_annual$pib_clean_constant2020_BRL[wind_matched_final_annual$wind_treat_postmatch==0 & wind_matched_final_annual$t_wind==1], na.rm = TRUE)
+
+ind_solar <- feols(spending_infra~ d_solar_pre7_bin+d_solar_pre.[6:4] +d_solar_pre.[2:1]+ new_mw_solar+ d_solar_post.[1:2]+d_solar_post3_bin |id_municipio + ano, solar_matched_final_annual)
+summary(ind_solar)
+
+mean(solar_matched_final_annual$va_industria_constant2020_BRL[solar_matched_final_annual$solar_treat_postmatch==0 & solar_matched_final_annual$t_solar==1], na.rm = TRUE)
+
+
+mean(wind_matched_final_annual$va_industria_constant2020_BRL[wind_matched_final_annual$wind_treat_postmatch==0 & wind_matched_final_annual$t_wind==1], na.rm = TRUE)
+
+taxes_solar <- feols(taxes_fees~ d_solar_pre7_bin+d_solar_pre.[6:4] +d_solar_pre.[2:1]+ new_mw_solar+ d_solar_post.[1:3]+d_solar_post4_bin |id_municipio + ano, solar_matched_final_annual)
+summary(taxes_solar)
+
+mean(solar_matched_final_annual$taxes_fees[solar_matched_final_annual$solar_treat_postmatch==0 & solar_matched_final_annual$t_solar==0], na.rm = TRUE)
+
+
+```
+Wind calculations
+```{r}
+#Calculations: 
+ind_wind <- feols(va_industria_constant2020_BRL~ d_wind_pre7_bin+d_wind_pre.[6:4] +d_wind_pre.[2:1]+ new_mw_wind+ d_wind_post.[1:5]+d_wind_post6_bin |id_municipio + ano, wind_matched_final_annual)
+summary(ind_wind)
+412965.8   *51   
+mean(wind_matched_final_annual$va_industria_constant2020_BRL[wind_matched_final_annual$wind_treat_postmatch==0 & wind_matched_final_annual$t_wind==1],na.rm = TRUE)
+
+median(wind_matched_final_annual$new_mw_wind[wind_matched_final_annual$new_mw_wind>5])
+#average BIP in industry in control group is 67.606.717 BRL, increase is 600.000/MW, hence median power plant of 58 MW leads to 50% increase in industrial value added three after the installation)
+
+#at t6 there are only 35 treted united left, which is why confidence interval increases more
+non_na_att5<-wind_matched_final_annual%>%filter(d_wind_post5 > 0 & ano<2021)%>%distinct(id_municipio)
+gdp_nas<-wind_matched_final_annual%>%filter(!is.na(pib_clean_constant2020_BRL))%>%ungroup()%>%distinct(ano)
+
+gdp_wind2 <- feols(pib_clean_constant2020_BRL ~ d_wind_pre7_bin+d_wind_pre.[6:4] +d_wind_pre.[2:1]+ new_mw_wind+ d_wind_post.[1:5]+d_wind_post6_bin |id_municipio + ano, wind_matched_final_annual)
+summary(gdp_wind2)
+860837.2   *51/mean(wind_matched_final_annual$pib_clean_constant2020_BRL[wind_matched_final_annual$wind_treat_postmatch==0 & wind_matched_final_annual$t_wind==1], na.rm = TRUE)
+
+
+mean(solar_matched_final_annual$pib_clean_constant2020_BRL[solar_matched_final_annual$solar_treat_postmatch==0 & solar_matched_final_annual$t_solar==1], na.rm = TRUE)
+mean(wind_matched_final_annual$pib_clean_constant2020_BRL[wind_matched_final_annual$wind_treat_postmatch==0 & wind_matched_final_annual$t_wind==1], na.rm = TRUE)
+
+taxes_solar <- feols(taxes_fees~ d_solar_pre.[7:1] + new_mw_solar+ d_solar_post.[1:5] |id_municipio + ano, solar_matched_final_annual)
+summary(taxes_solar)
+mean(solar_matched_final_annual$taxes_fees[solar_matched_final_annual$solar_treat_postmatch==0 & solar_matched_final_annual$t_solar==-1], na.rm = TRUE)
+
+taxes_wind <- feols(total_receipt_BRL2020~ d_wind_pre7_bin+d_wind_pre.[6:4] +d_wind_pre.[2:1]+ new_mw_wind+ d_wind_post.[1:5]+d_wind_post6_bin |id_municipio + ano, wind_matched_final_annual)
+summary(taxes_wind)
+172718.78      *51/ mean(wind_matched_final_annual$total_receipt_BRL2020[wind_matched_final_annual$wind_treat_postmatch==0 & wind_matched_final_annual$t_wind==6], na.rm = TRUE)
+```
+
+Pre-trend analysis
+```{r}
+# Function to calculate mean and 95% CI
+calculate_summary <- function(data, variables, group_vars) {
+  # Ensure group_vars are quosures for flexibility
+  group_vars <- syms(group_vars)
+  
+  # Iterate over variables and calculate summaries
+  map_dfr(variables, function(var) {
+    data %>%
+      group_by(!!!group_vars) %>% # Group by dynamic variables
+      summarize(
+        mean = mean(.data[[var]], na.rm = TRUE),
+        ci_lower = mean(.data[[var]], na.rm = TRUE) - qt(0.975, df = n() - 1) * sd(.data[[var]], na.rm = TRUE) / sqrt(n()),
+        ci_upper = mean(.data[[var]], na.rm = TRUE) + qt(0.975, df = n() - 1) * sd(.data[[var]], na.rm = TRUE) / sqrt(n()),
+        .groups = "drop"
+      ) %>%
+      mutate(variable = var) # Add variable name
+  })
+}
+
+# Example usage
+# List of variables to summarize
+wind_vars_month <- c("wind_inst_endmonth", "wind_om_endmonth", "wind_comp_endmonth","wind_other_jobs_endmonth","total_endmonth") # Replace with your variable names
+solar_vars_month <- c("solar_inst_endmonth", "solar_om_endmonth", "solar_comp_endmonth","solar_other_jobs_endmonth","total_endmonth") # Replace with your variable names
+wind_vars_annual <- c("pib_clean_constant2020_BRL","va_industria_constant2020_BRL","va_servicos_constant2020_BRL", "total_spending", "total_receipt_BRL2020","total_establishment","populacao","total_jobs_3112") #
+solar_vars_annual <- c("pib_clean_constant2020_BRL","va_industria_constant2020_BRL","va_servicos_constant2020_BRL", "total_spending", "total_receipt_BRL2020","total_establishment","populacao","total_jobs_3112") #
+
+# Grouping variables
+wind_group <- c("wind_treat_postmatch", "t_wind") # Replace with your grouping variables
+solar_group <- c("solar_treat_postmatch", "t_solar") # Replace with your grouping variables
+wind_group2 <- c("wind_first_mover", "t_wind") # Replace with your grouping variables
+solar_group2 <- c("solar_first_mover", "t_solar") # Replace with your grouping variables
+
+
+# Call the function
+wind_means_monthly <- calculate_summary(
+  data = wind_matched_final_monthly, 
+  variables = wind_vars_month, 
+  group_vars = wind_group
+)
+
+wind_means_annual <- calculate_summary(
+  data = wind_matched_final_annual, 
+  variables = wind_vars_annual, 
+  group_vars = wind_group
+)
+
+solar_means_monthly <- calculate_summary(
+  data = solar_matched_final_monthly, 
+  variables = solar_vars_month, 
+  group_vars = solar_group
+)
+
+
+solar_means_annual <- calculate_summary(
+  data = solar_matched_final_annual, 
+  variables = solar_vars_annual, 
+  group_vars = solar_group
+)
+
+wind_month_labels <- c(
+  "total_endmonth" = "Total Jobs",
+  "wind_comp_endmonth" = "Component",
+  "wind_inst_endmonth" = "Installation",
+  "wind_om_endmonth"="O&M", 
+  "wind_other_jobs_endmonth"= "Other sectors")
+
+solar_month_labels <- c(
+  "total_endmonth" = "Total Jobs",
+  "solar_comp_endmonth" = "Component",
+  "solar_inst_endmonth" = "Installation",
+  "solar_om_endmonth"="O&M", 
+  "solar_other_jobs_endmonth"= "Other sectors")
+
+
+annual_labels <- c(
+  "pib_clean_constant2020_BRL" = "GDP",
+  "va_industria_constant2020_BRL" = "Industry value-added",
+  "va_servicos_constant2020_BRL" = "Services value-added",
+  "total_spending"="Total Spending", 
+  "total_receipt_BRL2020"= "Total Receipt",
+  "total_establishment"="Total no. of active firms",
+  "populacao"="Total Population",
+  "total_jobs_3112"="Total Employment")
+
+wind_means_month<-ggplot(wind_means_monthly %>% filter(t_wind > -37, t_wind < 37), 
+       aes(x = t_wind, y = mean, color = as.factor(wind_treat_postmatch))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper, fill = as.factor(wind_treat_postmatch)), alpha = 0.2) + geom_vline(xintercept = 0)+ # Ribbon for CI
+  geom_vline(xintercept = -24, linetype="dashed")+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = wind_month_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Months before/after commissioning",
+    y = "Avg. No of Jobs",
+    color =  "Control (0) / Treated Municipalities (1)",
+    fill =  "Control (0) / Treated Municipalities (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","wind_means_monthly.png"),wind_means_month,  width = 3000, height=2000, units = "px")
+
+wind_annual_mean<-ggplot(wind_means_annual %>% filter(t_wind > -7, t_wind < 5), 
+       aes(x = t_wind, y = mean, color = as.factor(wind_treat_postmatch))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper, fill = as.factor(wind_treat_postmatch)), alpha = 0.2) + geom_vline(xintercept = 0)+ # Ribbon for CI
+  geom_vline(xintercept = -2, linetype="dashed")+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = annual_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Years before/after commissioning",
+    y = "",
+    color = "Control (0) / Treated Municipalities (1)",
+    fill = "Control (0) / Treated Municipalities (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","wind_means_annual.png"),wind_annual_mean,  width = 3000, height=2000, units = "px")
+
+
+solar_month_mean<-ggplot(solar_means_monthly %>% filter(t_solar > -48, t_solar < 37), 
+       aes(x = t_solar, y = mean, color = as.factor(solar_treat_postmatch))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper, fill = as.factor(solar_treat_postmatch)), alpha = 0.2) + geom_vline(xintercept = 0)+ geom_vline(xintercept = -24, linetype="dashed")+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = solar_month_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Months before/after commissioning",
+    y = "Avg. No of Jobs",
+    color =  "Control (0) / Treated Municipalities (1)",
+    fill =  "Control (0) / Treated Municipalities (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","solar_means_monthly.png"),solar_month_mean,  width = 3000, height=2000, units = "px")
+
+solar_annual_mean<-ggplot(solar_means_annual %>% filter(t_solar > -7, t_solar < 5), 
+       aes(x = t_solar, y = mean, color = as.factor(solar_treat_postmatch))) +
+  geom_line(size = 1) + # Lines for means
+  geom_point(size = 2) + # Points for means
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper, fill = as.factor(solar_treat_postmatch)), alpha = 0.2) + geom_vline(xintercept = 0)+ # Ribbon for CI
+  geom_vline(xintercept = -2, linetype="dashed")+ # Ribbon for CI
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = annual_labels)) + # Facet by variable
+  scale_color_manual(
+    values = c("grey30", "green") # Replace with desired colors for the lines
+  ) +
+  scale_fill_manual(
+    values = c("grey70", "lightgreen") # Lighter versions of the line colors
+  ) +
+  labs(
+    x = "Years before/after commissioning",
+    y = "",
+    color = "Control (0) / Treated Municipalities (1)",
+    fill = "Control (0) / Treated Municipalities (1)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","solar_means_annual.png"),solar_annual_mean,  width = 3000, height=2000, units = "px")
+```
+
+Addition Histogram of solar and wind municipalites
+```{r}
+solar_mun_mw<-solar_matched_final_monthly%>%filter(new_mw_solar>0)%>%group_by(id_municipio)%>%
+  summarize(total_mw=sum(new_mw_solar))
+solar_median_mw <- median(solar_mun_mw$total_mw, na.rm = TRUE)
+solar_avg_mw <- mean(solar_mun_mw$total_mw, na.rm = TRUE)
+
+wind_mun_mw<-wind_matched_final_monthly%>%filter(new_mw_wind>0)%>%group_by(id_municipio)%>%
+  summarize(total_mw=sum(new_mw_wind))
+wind_median_mw <- median(wind_mun_mw$total_mw, na.rm = TRUE)
+wind_avg_mw <- mean(wind_mun_mw$total_mw, na.rm = TRUE)
+
+solar_line_data <- data.frame(
+  yintercept = c(solar_median_mw, solar_avg_mw),
+  line_type = c("Median", "Mean"),
+  color = c("grey50", "red"),
+  linetype = c("dashed", "dotted"),
+  label = c(round(solar_median_mw, 2), round(solar_avg_mw, 2)) # Rounded values for labels
+)
+
+wind_line_data <- data.frame(
+  yintercept = c(wind_median_mw, wind_avg_mw),
+  line_type = c("Median", "Mean"),
+  color = c("grey50", "red"),
+  linetype = c("dashed", "dotted"),
+  label = c(round(wind_median_mw, 2), round(wind_avg_mw, 2)) # Rounded values for labels
+)
+
+
+
+solar_hist<-ggplot(solar_mun_mw, aes(y = total_mw)) +
+  geom_histogram(binwidth = 10, fill = "blue", alpha = 0.7, color = "black") + # Histogram
+  # Add the horizontal lines from the dummy data, which will control the legend
+  geom_hline(data = solar_line_data, aes(yintercept = yintercept, color = line_type, linetype = line_type), size = 1) +
+  # Add the labels for the median and mean values
+  geom_text(data = solar_line_data, aes(x =5, y = yintercept, label = label, color = line_type), 
+            hjust = 0, vjust = -0.5, size = 4, fontface = "bold") + # Position the text labels slightly off to the right of the plot
+  coord_flip() + # Flip the x and y axes
+  labs(
+    x = "Frequency",
+    y = "Total MW",
+    color = "", # Legend title for color
+    linetype = "" # Legend title for line type
+  ) +
+  scale_color_manual(values = c("Median" = "grey50", "Mean" = "red")) + # Custom colors for lines
+  scale_linetype_manual(values = c("Median" = "dashed", "Mean" = "dotted")) + # Custom linetypes for lines
+  scale_y_continuous(breaks=seq(0,650,50)) +
+  theme_bw() +
+  theme(legend.position = "bottom") # Position of the legend
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","solar_hist.png"),solar_hist,  width = 3000, height=2000, units = "px")
+
+wind_hist<-ggplot(wind_mun_mw, aes(y = total_mw)) +
+  geom_histogram(binwidth = 10, fill = "blue", alpha = 0.7, color = "black") + # Histogram
+  # Add the horizontal lines from the dummy data, which will control the legend
+  geom_hline(data = wind_line_data, aes(yintercept = yintercept, color = line_type, linetype = line_type), size = 1) +
+  # Add the labels for the median and mean values
+  geom_text(data = wind_line_data, aes(x =5, y = yintercept, label = label, color = line_type), 
+            hjust = 0, vjust = -0.5, size = 4, fontface = "bold") + # Position the text labels slightly off to the right of the plot
+  coord_flip() + # Flip the x and y axes
+  labs(
+    x = "Frequency",
+    y = "Total MW",
+    color = "", # Legend title for color
+    linetype = "" # Legend title for line type
+  ) +
+  scale_color_manual(values = c("Median" = "grey50", "Mean" = "red")) + # Custom colors for lines
+  scale_linetype_manual(values = c("Median" = "dashed", "Mean" = "dotted")) + # Custom linetypes for lines
+  scale_y_continuous(breaks=seq(0,1500,100)) +
+  theme_bw() +
+  theme(legend.position = "bottom") # Position of the legend
+ggsave(here("output", "regressions", "TWFE 1-to-1 binning","final figures","appendix","wind_hist.png"),wind_hist,  width = 3000, height=2000, units = "px")
+```
+
