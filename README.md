@@ -3,7 +3,7 @@ This folder includes the code and data to replicate the analysis of the paper "N
 Please proceed with all the steps in the sequence outlined below to ensure that you can download all the publicly available data from the servers and construct all the intermediate datasets necessary to replicate the analysis using R.
 
 Preparatory Steps:
-1. Since this paper uses extremely large datasets such as the Brazilian Employment Registry (RAIS), you first need to create a Google Cloud Console account to access the data. For this, please visit: Google Cloud Console and create an account. Create several project IDs that you will need later to download the data within the R environment. While they are called "billing IDs" there is no cost involved in downloading these datasets. 
+1. Since this paper uses extremely large datasets such as the Brazilian Employment Registry (RAIS), you first need to create a Google Cloud Console account to access the data. For this, please visit: Google Cloud Console and create an account. Create several project IDs that you will need later to download the data within the R environment. 
 
 2. If you access the code files through GitHub, clone the repository to replicate the same folder structure (raw, intermediate, final and output). If you access this through a zip file, please extract the zip.
 
