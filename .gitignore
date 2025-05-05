@@ -43,6 +43,6 @@ vignettes/*.pdf
 
 #ignore data folder to avoid syncing large datasets with Github
 #raw/
-intermediate/
-final/
-output/
+#intermediate/
+#final/
+#output/
